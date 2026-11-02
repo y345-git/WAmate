@@ -1008,11 +1008,13 @@ class WhatsAppBot:
                     break
                 continue
 
-            # Fetch uncached candidates from the last lookback_hours
+            # Fetch uncached candidates from the last lookback_hours (strictly prioritizing self-chat, DMs, and groups before statuses)
             try:
                 candidates = self.db.get_uncached_media_candidates(
                     lookback_hours=Config.IDLE_OCR_LOOKBACK_HOURS,
                     limit=Config.IDLE_OCR_MAX_PER_RUN,
+                    include_statuses=Config.IDLE_OCR_INCLUDE_STATUSES,
+                    self_jid=self.my_canonical_jid or "",
                 )
             except Exception as e:
                 logger.warning("Idle OCR: error querying uncached candidates: %s", e)
@@ -1090,8 +1092,17 @@ class WhatsAppBot:
                         processed_in_cycle += 1
                         self._idle_worker_stats["processed"] += 1
                         self._idle_worker_stats["last_active"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        chat_jid = item.get("chat_jid") or ""
+                        is_group = bool(item.get("is_group"))
+                        chat_type = "DM" if not is_group else "Group"
+                        if chat_jid == "status@broadcast":
+                            chat_type = "Status Story"
+                        elif chat_jid == self.my_canonical_jid or chat_jid == getattr(self, "my_lid_jid", ""):
+                            chat_type = "Self-Chat"
+
                         logger.info(
-                            "Idle OCR: Pre-cached image %s from '%s' (%d/%d in cycle).",
+                            "Idle OCR: Pre-cached %s image %s from '%s' (%d/%d in cycle).",
+                            chat_type,
                             msg_id,
                             chat_name,
                             processed_in_cycle,

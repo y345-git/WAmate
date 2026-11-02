@@ -30,6 +30,7 @@ class Config:
     IDLE_OCR_LOOKBACK_HOURS: int = int(os.getenv("IDLE_OCR_LOOKBACK_HOURS", "48"))
     IDLE_OCR_DELAY_SECONDS: int = int(os.getenv("IDLE_OCR_DELAY_SECONDS", "12"))
     IDLE_OCR_MAX_PER_RUN: int = int(os.getenv("IDLE_OCR_MAX_PER_RUN", "100"))
+    IDLE_OCR_INCLUDE_STATUSES: bool = os.getenv("IDLE_OCR_INCLUDE_STATUSES", "false").lower() in ("true", "1", "yes")
 
     @classmethod
     def ensure_data_dir(cls) -> None:

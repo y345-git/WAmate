@@ -284,26 +284,45 @@ class DatabaseManager:
                         conn.execute("UPDATE messages SET text = ? WHERE id = ?", (updated_text, msg_id))
             conn.commit()
 
-    def get_uncached_media_candidates(self, lookback_hours: int = 48, limit: int = 50) -> list[dict[str, Any]]:
-        """Fetch media messages that have not yet been processed by OCR within lookback_hours."""
+    def get_uncached_media_candidates(
+        self,
+        lookback_hours: int = 48,
+        limit: int = 50,
+        include_statuses: bool = False,
+        self_jid: str = "",
+    ) -> list[dict[str, Any]]:
+        """Fetch un-cached media messages within lookback_hours, strictly prioritizing:
+        1. Self-chat messages / notes to self
+        2. Direct 1-on-1 Messages (DMs with contacts or unsaved numbers)
+        3. Group chats & Announcements
+        4. WhatsApp Status Stories (only if include_statuses is True, processed last)
+        """
         cutoff_ts = int(time.time()) - (lookback_hours * 3600)
+        status_filter = "" if include_statuses else "AND m.chat_jid != 'status@broadcast'"
+        sql = f"""
+        SELECT m.id, m.chat_jid, m.sender_jid, m.timestamp, m.text, 
+               m.media_type, m.media_filename, m.media_mimetype,
+               m.chat_name, m.sender_name, m.is_group
+        FROM messages m
+        LEFT JOIN media_ocr_cache c ON m.id = c.msg_id
+        WHERE c.msg_id IS NULL
+          AND (m.media_type LIKE '%image%' OR m.media_mimetype LIKE 'image/%')
+          AND m.timestamp >= ?
+          AND m.raw_message IS NOT NULL
+          {status_filter}
+        ORDER BY 
+          CASE 
+            WHEN m.chat_jid = ? OR m.sender_jid = ? THEN 1             -- Self-chat
+            WHEN m.is_group = 0 AND m.chat_jid != 'status@broadcast' THEN 2 -- Direct 1-on-1 chats (DMs)
+            WHEN m.is_group = 1 THEN 3                                 -- Group chats & announcements
+            WHEN m.chat_jid = 'status@broadcast' THEN 4                -- Status stories
+            ELSE 5
+          END ASC,
+          m.timestamp DESC
+        LIMIT ?
+        """
         with self._get_connection() as conn:
-            rows = conn.execute(
-                """
-                SELECT m.id, m.chat_jid, m.sender_jid, m.timestamp, m.text, 
-                       m.media_type, m.media_filename, m.media_mimetype,
-                       m.chat_name, m.sender_name
-                FROM messages m
-                LEFT JOIN media_ocr_cache c ON m.id = c.msg_id
-                WHERE c.msg_id IS NULL
-                  AND (m.media_type LIKE '%image%' OR m.media_mimetype LIKE 'image/%')
-                  AND m.timestamp >= ?
-                  AND m.raw_message IS NOT NULL
-                ORDER BY m.timestamp DESC
-                LIMIT ?
-                """,
-                (cutoff_ts, limit),
-            ).fetchall()
+            rows = conn.execute(sql, (cutoff_ts, self_jid, self_jid, limit)).fetchall()
             return [dict(r) for r in rows]
 
     def get_ocr_stats(self) -> dict[str, int]:
