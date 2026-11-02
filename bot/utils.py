@@ -466,8 +466,177 @@ def extract_rich_message_info(raw_msg: Message) -> RichMessageInfo:
     return RichMessageInfo(text="", media_type="text")
 
 
-def extract_document_text(file_path: str, max_chars: int = 15000) -> str:
-    """Extract readable text from a PDF, Word DOCX, or text file."""
+def _extract_xlsx_text(path: Path, max_chars: int = 18000) -> str:
+    """Extract structured spreadsheet data, sheets, and tables from an Excel file (.xlsx, .xlsm, .xltx, .xls)."""
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(str(path), data_only=True, read_only=True)
+        sheets_out = []
+        total_chars = 0
+        for sheet_name in wb.sheetnames:
+            ws = wb[sheet_name]
+            rows_data = []
+            for row_idx, row in enumerate(ws.iter_rows(values_only=True)):
+                if row_idx >= 150:
+                    rows_data.append("... [Additional rows truncated for brevity] ...")
+                    break
+                # Skip empty rows
+                if not any(c is not None and str(c).strip() != "" for c in row):
+                    continue
+                cells = [str(c).strip() if c is not None else "" for c in row]
+                while cells and cells[-1] == "":
+                    cells.pop()
+                if cells:
+                    rows_data.append(" | ".join(cells))
+
+            if rows_data:
+                sheet_text = f"=== Sheet: '{sheet_name}' ({len(rows_data)} rows) ===\n" + "\n".join(rows_data)
+                sheets_out.append(sheet_text)
+                total_chars += len(sheet_text)
+                if total_chars > max_chars:
+                    break
+        wb.close()
+        if sheets_out:
+            return "\n\n".join(sheets_out)[:max_chars]
+        return "The Excel spreadsheet contains no readable data."
+    except Exception as e:
+        # Fallback to reading shared strings XML from ZIP archive
+        try:
+            with zipfile.ZipFile(str(path)) as z:
+                shared_strings = []
+                if "xl/sharedStrings.xml" in z.namelist():
+                    tree = ET.fromstring(z.read("xl/sharedStrings.xml"))
+                    for si in tree.findall(".//{http://schemas.openxmlformats.org/spreadsheetml/2006/main}t"):
+                        if si.text:
+                            shared_strings.append(si.text.strip())
+                if shared_strings:
+                    return f"[Extracted from Excel Shared Strings ({path.name})]\n" + "\n".join(shared_strings)[:max_chars]
+        except Exception:
+            pass
+        return f"Failed to extract text from Excel file: {e}"
+
+
+def _extract_docx_text(path: Path, max_chars: int = 18000) -> str:
+    """Extract structured paragraphs, headings, and tables from a Word document (.docx, .doc)."""
+    try:
+        import docx
+        doc = docx.Document(str(path))
+        elements = []
+        total_chars = 0
+
+        for element in doc.element.body:
+            tag = element.tag.split("}")[-1] if "}" in element.tag else element.tag
+            if tag == "p":
+                p = docx.text.paragraph.Paragraph(element, doc)
+                txt = p.text.strip()
+                if txt:
+                    if p.style and "heading" in p.style.name.lower():
+                        elements.append(f"## {txt}")
+                    else:
+                        elements.append(txt)
+                    total_chars += len(txt)
+            elif tag == "tbl":
+                table = docx.table.Table(element, doc)
+                table_rows = []
+                for row in table.rows:
+                    cells = [cell.text.strip().replace("\n", " ") for cell in row.cells]
+                    if any(cells):
+                        table_rows.append(" | ".join(cells))
+                if table_rows:
+                    tbl_str = "\n".join(table_rows)
+                    elements.append(f"--- Table ---\n{tbl_str}\n--- End Table ---")
+                    total_chars += len(tbl_str)
+
+            if total_chars > max_chars:
+                break
+
+        if elements:
+            return "\n\n".join(elements)[:max_chars]
+    except Exception:
+        pass
+
+    # Fallback to raw XML extraction from word/document.xml
+    try:
+        with zipfile.ZipFile(str(path)) as z:
+            xml_content = z.read("word/document.xml")
+            tree = ET.fromstring(xml_content)
+            namespaces = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
+            texts = [node.text for node in tree.iterfind(".//w:t", namespaces) if node.text]
+            if texts:
+                return " ".join(texts)[:max_chars]
+    except Exception as ze:
+        return f"Failed to extract text from Word document: {ze}"
+    return "The Word document appears to be empty."
+
+
+def _extract_pptx_text(path: Path, max_chars: int = 18000) -> str:
+    """Extract slide titles, bullet points, tables, and notes from a PowerPoint presentation (.pptx, .ppt)."""
+    try:
+        from pptx import Presentation
+        prs = Presentation(str(path))
+        slides_out = []
+        total_chars = 0
+
+        for slide_num, slide in enumerate(prs.slides, start=1):
+            slide_lines = []
+            title = ""
+            if slide.shapes.title and slide.shapes.title.text:
+                title = slide.shapes.title.text.strip()
+                slide_lines.append(f"Title: {title}")
+
+            for shape in slide.shapes:
+                if shape == slide.shapes.title:
+                    continue
+                if shape.has_text_frame:
+                    for paragraph in shape.text_frame.paragraphs:
+                        txt = paragraph.text.strip()
+                        if txt and txt != title:
+                            slide_lines.append(f"• {txt}")
+                elif shape.has_table:
+                    table_rows = []
+                    for row in shape.table.rows:
+                        cells = [cell.text.strip().replace("\n", " ") for cell in row.cells]
+                        if any(cells):
+                            table_rows.append(" | ".join(cells))
+                    if table_rows:
+                        slide_lines.append("[Table]:\n" + "\n".join(table_rows))
+
+            if slide.has_notes_slide and slide.notes_slide.notes_text_frame:
+                notes = slide.notes_slide.notes_text_frame.text.strip()
+                if notes:
+                    slide_lines.append(f"[Speaker Notes]: {notes}")
+
+            if slide_lines:
+                slide_header = f"=== Slide {slide_num}" + (f": {title}" if title else "") + " ==="
+                slide_text = f"{slide_header}\n" + "\n".join(slide_lines)
+                slides_out.append(slide_text)
+                total_chars += len(slide_text)
+                if total_chars > max_chars:
+                    break
+
+        if slides_out:
+            return "\n\n".join(slides_out)[:max_chars]
+        return "The PowerPoint presentation contains no text."
+    except Exception as e:
+        # Fallback to XML extraction from ZIP archive
+        try:
+            with zipfile.ZipFile(str(path)) as z:
+                slide_files = sorted([f for f in z.namelist() if f.startswith("ppt/slides/slide") and f.endswith(".xml")])
+                slides_text = []
+                for sfile in slide_files:
+                    tree = ET.fromstring(z.read(sfile))
+                    texts = [n.text for n in tree.iterfind(".//{http://schemas.openxmlformats.org/drawingml/2006/main}t") if n.text]
+                    if texts:
+                        slides_text.append(f"--- {Path(sfile).stem} ---\n" + "\n".join(texts))
+                if slides_text:
+                    return "\n\n".join(slides_text)[:max_chars]
+        except Exception:
+            pass
+        return f"Failed to extract text from PowerPoint presentation: {e}"
+
+
+def extract_document_text(file_path: str, max_chars: int = 18000) -> str:
+    """Extract readable structured text from PDFs, Excel spreadsheets, Word documents, PowerPoint presentations, or text files."""
     path = Path(file_path)
     if not path.exists():
         return f"File '{file_path}' does not exist on disk."
@@ -493,23 +662,20 @@ def extract_document_text(file_path: str, max_chars: int = 15000) -> str:
         except Exception as e:
             return f"Failed to extract text from PDF: {e}"
 
-    # 2. Word DOCX Documents
-    elif suffix == ".docx":
-        try:
-            with zipfile.ZipFile(str(path)) as z:
-                xml_content = z.read("word/document.xml")
-                tree = ET.fromstring(xml_content)
-                namespaces = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
-                texts = [node.text for node in tree.iterfind(".//w:t", namespaces) if node.text]
-                if not texts:
-                    return "The Word document appears to be empty."
-                full_text = " ".join(texts)
-                return full_text[:max_chars]
-        except Exception as e:
-            return f"Failed to extract text from DOCX: {e}"
+    # 2. Excel Spreadsheets (.xlsx, .xlsm, .xltx, .xls)
+    elif suffix in [".xlsx", ".xlsm", ".xltx", ".xls"]:
+        return _extract_xlsx_text(path, max_chars=max_chars)
 
-    # 3. Plain Text, CSV, JSON, XML, Code
-    elif suffix in [".txt", ".csv", ".json", ".xml", ".html", ".py", ".md", ".log"]:
+    # 3. Word Documents (.docx, .doc)
+    elif suffix in [".docx", ".doc"]:
+        return _extract_docx_text(path, max_chars=max_chars)
+
+    # 4. PowerPoint Presentations (.pptx, .ppt)
+    elif suffix in [".pptx", ".ppt"]:
+        return _extract_pptx_text(path, max_chars=max_chars)
+
+    # 5. Plain Text, CSV, JSON, Markdown, Code
+    elif suffix in [".txt", ".csv", ".tsv", ".json", ".xml", ".html", ".py", ".md", ".log", ".yaml", ".yml", ".c", ".cpp", ".java", ".sql"]:
         try:
             return path.read_text(encoding="utf-8", errors="ignore")[:max_chars]
         except Exception as e:

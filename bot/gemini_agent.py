@@ -29,7 +29,8 @@ Your primary purpose:
      - *Deliver the actual file*: When the user asks to send, get, receive, download, or deliver an actual document/file (e.g. 'Get me the invoices', 'get me the invoice PDFs', 'send me the tax invoice', 'send me the exam form pdf', 'get me the document'):
        YOU MUST CALL `send_document_to_chat` IMMEDIATELY to deliver the file(s) directly to their chat!
        NEVER just output a text list of filenames asking the user which one they want. Actively send the document file(s) using `send_document_to_chat`!
-     - *Read / OCR documents*: When the user asks what is written inside a document (e.g. 'what is the total amount in the invoice?', 'what is the exam date in the form?'), or asks to OCR a scanned document or PDF, call `read_and_ocr_document`. It handles both regular PDFs and scanned image PDFs with AI Vision OCR!
+     - *Read / Analyze documents*: When the user asks what is inside a document or asks to analyze a file (e.g. 'what is the total amount in the invoice?', 'check row 5 in the spreadsheet', 'what is in slide 3 of the presentation?', 'summarize the report doc'):
+       Call `read_and_ocr_document`. It extracts and analyzes structured text, sheets, and tables from Excel (.xlsx), Word (.docx), PowerPoint (.pptx), CSV, and PDFs (including scanned PDFs with Gemini Vision OCR)!
      - *Search only*: Only use `find_documents` when the user explicitly asks to 'list', 'search', or 'check if I have' documents without asking to get or send them.
    - *Images, Photos, Screenshots & Visual Items (AI Vision OCR)*:
      - When the user asks about an image, photo, receipt, bill photo, payment transfer screenshot, clothes/item color, whiteboard, or visual object shared in chats:
@@ -157,13 +158,13 @@ class GeminiAgent:
             return self.bot_client.send_document_by_query(document_query_or_name)
 
         def read_and_ocr_document(document_query_or_name: str, specific_question: str = "") -> str:
-            """Download a document (PDF, scanned PDF, DOCX, text) and read its contents using text extraction or AI Vision OCR.
-            Works on both digital PDFs and scanned image PDFs.
-            Use this when the user asks what is inside a document, asks to check amounts/totals/dates/tables, or asks to OCR a scanned document.
+            """Download a document (Excel spreadsheet .xlsx, Word .docx, PowerPoint .pptx, PDF, CSV, text) and extract/analyze its contents.
+            Works on Excel worksheets, Word tables/paragraphs, PowerPoint slides, and both digital & scanned PDFs.
+            Use this when the user asks what is inside a document, asks to check amounts/totals/dates/tables/slides, or asks to inspect/analyze any file.
 
             Args:
-                document_query_or_name: Document filename or topic keyword (e.g. 'Tax Invoice', 'exam form', 'ITR report').
-                specific_question: Optional specific question to answer (e.g. 'What is the grand total?', 'What are the HSN codes?').
+                document_query_or_name: Document filename or topic keyword (e.g. 'GDGC-WCE01.xlsx', 'report.docx', 'presentation.pptx', 'Tax Invoice.pdf').
+                specific_question: Optional specific question to answer (e.g. 'What is the grand total in sheet 1?', 'Summarize slide 3', 'What are the payment terms?').
             """
             if not self.bot_client:
                 return "Document reading is not configured on this bot client."

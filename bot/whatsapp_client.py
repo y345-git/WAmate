@@ -620,6 +620,14 @@ class WhatsAppBot:
                 safe_filename += ".png"
             elif "pdf" in mimetype.lower():
                 safe_filename += ".pdf"
+            elif "spreadsheet" in mimetype.lower() or "excel" in mimetype.lower():
+                safe_filename += ".xlsx"
+            elif "wordprocessingml" in mimetype.lower() or "msword" in mimetype.lower():
+                safe_filename += ".docx"
+            elif "presentationml" in mimetype.lower() or "powerpoint" in mimetype.lower():
+                safe_filename += ".pptx"
+            elif "csv" in mimetype.lower():
+                safe_filename += ".csv"
             elif "ogg" in mimetype.lower():
                 safe_filename += ".ogg"
             elif "audio" in mimetype.lower():
@@ -723,7 +731,7 @@ class WhatsAppBot:
             return f"Found matching documents for '{query}', but could not download them from WhatsApp."
 
     def read_and_ocr_document(self, query: str, specific_question: str = "") -> str:
-        """Find matching document, download it, and extract text or run Gemini Multimodal OCR on scanned PDFs."""
+        """Find matching document, download it, and extract structured text (Excel, Word, PowerPoint, PDF, CSV, Text) or run Gemini Vision OCR on scanned PDFs."""
         matches = self.db.find_documents(query=query, limit=10)
         if not matches:
             return f"No document matching '{query}' found in your chats."
@@ -733,33 +741,37 @@ class WhatsAppBot:
             filename = doc_info.get("filename") or "document"
             chat_name = doc_info.get("chat") or "Unknown"
 
+            # Check if this document has cached extracted text or OCR analysis
+            cached_text = self.db.get_ocr_cache(msg_id)
+            if cached_text:
+                logger.info("Found cached text/analysis for document %s (instant local lookup)", filename)
+                return (
+                    f"--- Document Content: {filename} (Chat: '{chat_name}') [Cached] ---\n"
+                    f"{cached_text}\n"
+                    f"--- End of Document Content ---"
+                )
+
             file_path, real_filename, mimetype, err = self.download_media_by_id(msg_id)
             if err or not file_path:
                 logger.warning("Could not download '%s' to read: %s (checking next match)", filename, err)
                 continue
 
-            # First, attempt local text extraction
-            text = extract_document_text(file_path, max_chars=12000)
+            # Extract structured text (supports Excel .xlsx, Word .docx, PowerPoint .pptx, PDF, CSV, Code, Text)
+            text = extract_document_text(file_path, max_chars=18000)
 
-            # Check if this document is a scanned image, has low text, or user requested OCR/detailed inspection
+            # Check if this document is a scanned image PDF without selectable text, requiring Gemini Vision OCR
             is_scanned = (
-                not text
-                or "scanned images without selectable text" in text.lower()
-                or len(text.strip()) < 100
-                or any(k in (query + " " + specific_question).lower() for k in ["ocr", "scan", "scanned", "image", "table", "tax", "gst", "total", "amount"])
+                mimetype == "application/pdf"
+                and (
+                    not text
+                    or "scanned images without selectable text" in text.lower()
+                    or len(text.strip()) < 100
+                    or any(k in (query + " " + specific_question).lower() for k in ["ocr", "scan", "scanned", "image", "table", "tax", "gst", "total", "amount"])
+                )
             )
 
             if is_scanned and mimetype == "application/pdf":
-                cached_ocr = self.db.get_ocr_cache(msg_id)
-                if cached_ocr:
-                    logger.info("Found cached OCR for document %s (skipping Vision API call)", real_filename or filename)
-                    return (
-                        f"--- Document Analysis & AI Vision OCR (Cached): {real_filename or filename} (Chat: '{chat_name}') ---\n"
-                        f"{cached_ocr}\n"
-                        f"--- End of Document OCR ---"
-                    )
-
-                logger.info("Running Gemini Vision OCR on document %s...", real_filename or filename)
+                logger.info("Running Gemini Vision OCR on scanned document %s...", real_filename or filename)
                 try:
                     with open(file_path, "rb") as f:
                         file_bytes = f.read()
@@ -773,6 +785,10 @@ class WhatsAppBot:
                     )
                 except Exception as e:
                     logger.warning("Gemini Vision OCR on %s failed: %s, falling back to text extraction", real_filename or filename, e)
+
+            # Cache the extracted document text so future queries and FTS search find it instantly
+            if text and not text.startswith("Failed to extract"):
+                self.db.save_ocr_cache(msg_id, text, mimetype=mimetype or "")
 
             return (
                 f"--- Document Content: {real_filename or filename} (from chat '{chat_name}') ---\n"

@@ -11,3 +11,8 @@ pydantic>=2.0.0
 segno>=1.6.0
 python-magic>=0.4.27
 pypdf>=4.0.0
+
+# Document analysis (Excel, Word, PowerPoint)
+openpyxl>=3.1.0
+python-docx>=1.1.0
+python-pptx>=1.0.0
