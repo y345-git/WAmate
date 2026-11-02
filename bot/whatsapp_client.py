@@ -11,7 +11,7 @@ from neonize.proto.waE2E.WAWebProtobufsE2E_pb2 import Message
 from neonize.utils import ClientName
 
 from .config import Config
-from .database import DatabaseManager
+from .database import DatabaseManager, _format_timestamp
 from .gemini_agent import GeminiAgent
 from .utils import (
     MessageDeduplicator,
@@ -604,27 +604,105 @@ class WhatsAppBot:
         """Alias for backward compatibility."""
         return self.read_and_ocr_document(query)
 
-    def inspect_and_ocr_image(self, query_or_contact: str = "", user_question: str = "") -> str:
-        """Find image or photo in chats, download it, and run Gemini Vision OCR to transcribe text and analyze content."""
+    def inspect_and_ocr_image(
+        self,
+        message_id: str = "",
+        contact_or_chat: str = "",
+        topic_or_query: str = "",
+        user_question: str = "",
+        query_or_contact: str = "",
+    ) -> str:
+        """Find an image or photo in chats, download it, and run Gemini Vision OCR to transcribe text and analyze content."""
+        # Normalize arguments for flexibility
+        if query_or_contact and not contact_or_chat and not message_id:
+            cleaned_input = query_or_contact.strip()
+            # If the user passed a message ID into query_or_contact
+            if len(cleaned_input) >= 16 and " " not in cleaned_input and self.db.get_message_raw(cleaned_input):
+                message_id = cleaned_input
+            else:
+                contact_or_chat = cleaned_input
+
+        # 1. If an exact message_id was provided, inspect that specific image directly
+        if message_id:
+            msg_id = message_id.strip()
+            raw_info = self.db.get_message_raw(msg_id)
+            if not raw_info:
+                return f"No message found in the database with ID '{msg_id}'."
+
+            file_path, real_filename, mimetype, err = self.download_media_by_id(msg_id)
+            if err or not file_path:
+                return f"Found image {msg_id}, but could not download it from WhatsApp: {err}"
+
+            try:
+                with open(file_path, "rb") as f:
+                    img_bytes = f.read()
+
+                chat_name = raw_info.get("chat_name") or raw_info.get("chat_jid") or "Unknown"
+                sender_name = raw_info.get("sender_name") or "Unknown"
+                timestamp = _format_timestamp(raw_info.get("timestamp"))
+                caption = raw_info.get("text") or ""
+
+                logger.info("Running Gemini Vision OCR on exact image %s from chat '%s'...", msg_id, chat_name)
+                ocr_prompt = (
+                    user_question
+                    or f"Transcribe all text, numbers, receipts, amounts, handwritten notes, colors, patterns, and visual details from this image (shared by '{sender_name}' in chat '{chat_name}' at {timestamp}):"
+                )
+                analysis = self.gemini.ocr_file_content(
+                    img_bytes, mimetype=mimetype or "image/jpeg", prompt=ocr_prompt
+                )
+
+                return (
+                    f"--- Image Analysis ({real_filename or msg_id}) from chat '{chat_name}' ({timestamp}) ---\n"
+                    f"Sender: {sender_name}\n"
+                    f"Caption: {caption if caption else 'None'}\n\n"
+                    f"{analysis}\n"
+                    f"--- End of Image Analysis ---"
+                )
+            except Exception as e:
+                logger.exception("Failed to run OCR on image %s: %s", msg_id, e)
+                return f"Error analyzing image {msg_id}: {str(e)}"
+
+        # 2. Search candidate images
         images = []
-        if query_or_contact:
-            # 1. Search by chat_name_or_jid (matches both DM and messages sent by the contact)
-            images = self.db.find_voice_notes_and_media(media_type="image", query="", chat_name_or_jid=query_or_contact, limit=6)
-            if not images:
-                # 2. Try matching query keyword in captions
-                images = self.db.find_voice_notes_and_media(media_type="image", query=query_or_contact, limit=6)
+        if topic_or_query and contact_or_chat:
+            images = self.db.find_voice_notes_and_media(
+                media_type="image", query=topic_or_query, chat_name_or_jid=contact_or_chat, limit=10
+            )
+
+        if not images and contact_or_chat:
+            images = self.db.find_voice_notes_and_media(
+                media_type="image", query="", chat_name_or_jid=contact_or_chat, limit=20
+            )
+
+        if not images and topic_or_query:
+            images = self.db.find_voice_notes_and_media(
+                media_type="image", query=topic_or_query, limit=10
+            )
 
         if not images:
-            images = self.db.find_voice_notes_and_media(media_type="image", query="", limit=5)
+            images = self.db.find_voice_notes_and_media(media_type="image", query="", limit=10)
 
         if not images:
-            return f"No images found matching '{query_or_contact}' in your chats."
+            target_desc = f"'{topic_or_query}' in '{contact_or_chat}'" if (topic_or_query and contact_or_chat) else f"'{contact_or_chat or topic_or_query}'"
+            return f"No images found matching {target_desc} in your chats."
+
+        # If user asked a specific question or topic, prioritize candidate images whose caption or text matches keywords
+        search_terms = set(re.findall(r"\w+", (topic_or_query + " " + user_question).lower()))
+        for stop in ["what", "when", "where", "the", "did", "image", "photo", "show", "send", "tell", "details"]:
+            search_terms.discard(stop)
+
+        if search_terms:
+            def _image_relevance(img_dict: dict[str, Any]) -> int:
+                cap = (img_dict.get("caption") or img_dict.get("description") or "").lower()
+                return sum(2 for term in search_terms if term in cap)
+
+            images.sort(key=_image_relevance, reverse=True)
 
         inspections = []
         for img in images:
             msg_id = img["id"]
             chat_name = img.get("chat") or "Unknown"
-            caption = img.get("caption") or ""
+            caption = img.get("caption") or img.get("description") or ""
             timestamp = img.get("timestamp") or ""
 
             file_path, real_filename, mimetype, err = self.download_media_by_id(msg_id)
@@ -637,8 +715,13 @@ class WhatsAppBot:
                     img_bytes = f.read()
 
                 logger.info("Running Gemini Vision OCR on image %s from chat '%s'...", msg_id, chat_name)
-                ocr_prompt = user_question or f"Transcribe all text, numbers, receipts, handwritten notes, colors, patterns, and visual details from this image (shared in chat '{chat_name}'):"
-                analysis = self.gemini.ocr_file_content(img_bytes, mimetype=mimetype or "image/jpeg", prompt=ocr_prompt)
+                ocr_prompt = (
+                    user_question
+                    or f"Transcribe all text, numbers, receipts, handwritten notes, colors, patterns, and visual details from this image (shared in chat '{chat_name}'):"
+                )
+                analysis = self.gemini.ocr_file_content(
+                    img_bytes, mimetype=mimetype or "image/jpeg", prompt=ocr_prompt
+                )
 
                 inspections.append(
                     f"--- Image Analysis ({real_filename or msg_id}) from chat '{chat_name}' ({timestamp}) ---\n"
@@ -646,7 +729,7 @@ class WhatsAppBot:
                     f"{analysis}\n"
                     f"--- End of Image Analysis ---"
                 )
-                if len(inspections) >= 3:
+                if len(inspections) >= 4:
                     break
             except Exception as e:
                 logger.exception("Failed to run OCR on image %s: %s", msg_id, e)
@@ -655,7 +738,7 @@ class WhatsAppBot:
         if inspections:
             return "\n\n".join(inspections)
 
-        return f"Found matching images, but could not download them from WhatsApp servers (links may have expired)."
+        return "Found matching images, but could not download them from WhatsApp servers (links may have expired)."
 
     def start(self) -> None:
         """Start the WhatsApp bot connection."""

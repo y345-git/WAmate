@@ -30,8 +30,14 @@ Your primary purpose:
        NEVER just output a text list of filenames asking the user which one they want. Actively send the document file(s) using `send_document_to_chat`!
      - *Read / OCR documents*: When the user asks what is written inside a document (e.g. 'what is the total amount in the invoice?', 'what is the exam date in the form?'), or asks to OCR a scanned document or PDF, call `read_and_ocr_document`. It handles both regular PDFs and scanned image PDFs with AI Vision OCR!
      - *Search only*: Only use `find_documents` when the user explicitly asks to 'list', 'search', or 'check if I have' documents without asking to get or send them.
-   - *Images, Photos & Visual Items (AI Vision OCR)*:
-     - When the user asks about an image, photo, receipt, bill photo, screenshot, clothes/item color, whiteboard, or visual object shared in chats, call `inspect_and_ocr_image`. It downloads the image and performs AI Vision OCR to extract all visual content, colors, text, and numbers!
+   - *Images, Photos, Screenshots & Visual Items (AI Vision OCR)*:
+     - When the user asks about an image, photo, receipt, bill photo, payment transfer screenshot, clothes/item color, whiteboard, or visual object shared in chats:
+       1. If searching for a specific payment, receipt, or topic (e.g. 'Paytm payment to Ajit Patil', '10000 rs transfer'):
+          - Search using `search_messages_by_keyword(query="paytm")` or `find_voice_notes_and_media(media_type="image", query="paytm", contact_or_chat="Ajit Patil")`.
+          - When you find the image message, pass its exact `message_id` to `inspect_and_ocr_image(message_id=..., specific_question="What is the amount transferred?")`!
+          - Or pass `contact_or_chat` and `topic_or_query` directly (e.g. `inspect_and_ocr_image(contact_or_chat="Ajit Patil", topic_or_query="paytm", specific_question=...)`).
+       2. Never search unrelated chats or stories (`status@broadcast`). Focus strictly on the target chat or contact.
+     - `inspect_and_ocr_image` downloads the image and performs AI Vision OCR to extract all visual content, colors, text, and numbers!
    - *Contact Cards (vCards)*: Locate phone numbers, shared contacts, organizations, and business cards using `find_shared_contacts`.
    - *Polls & Surveys*: Retrieve poll questions, available choices/options, and settings using `get_polls`.
    - *Voice Notes, Audio & Media*: Search for voice messages, durations, audio clips, image captions, and videos using `find_voice_notes_and_media`.
@@ -162,17 +168,29 @@ class GeminiAgent:
             """Alias for read_and_ocr_document."""
             return read_and_ocr_document(document_query_or_name)
 
-        def inspect_and_ocr_image(query_or_contact: str = "", specific_question: str = "") -> str:
-            """Find and analyze an image or photo sent in WhatsApp chats (receipts, photos of bills, handwritten notes, whiteboards, screenshots).
+        def inspect_and_ocr_image(
+            message_id: str = "",
+            contact_or_chat: str = "",
+            topic_or_query: str = "",
+            specific_question: str = "",
+        ) -> str:
+            """Inspect and run AI Vision OCR on a photo, screenshot, receipt, payment screenshot, bill, or image.
             Performs AI Vision OCR to extract text, tables, numbers, and visual content, and answers specific questions.
 
             Args:
-                query_or_contact: Optional chat name, contact name, or image caption keyword (e.g. 'Education', 'Priyadarshani', 'receipt').
-                specific_question: Optional question to answer about the image (e.g. 'What is the total amount?', 'Transcribe the text in this image').
+                message_id: Optional exact WhatsApp message ID if you already found the image message via search. This is the fastest and most accurate method!
+                contact_or_chat: Optional contact name or chat name to look for the image (e.g. 'Ajit Patil', 'Education').
+                topic_or_query: Optional keyword or topic (e.g. 'paytm', 'payment', 'transfer', 'kurta', 'receipt', 'bill').
+                specific_question: Specific question to answer about the image (e.g. 'What is the amount transferred?', 'What color is the dress?').
             """
             if not self.bot_client:
                 return "Image inspection is not configured on this bot client."
-            return self.bot_client.inspect_and_ocr_image(query_or_contact=query_or_contact, user_question=specific_question)
+            return self.bot_client.inspect_and_ocr_image(
+                message_id=message_id,
+                contact_or_chat=contact_or_chat,
+                topic_or_query=topic_or_query,
+                user_question=specific_question,
+            )
 
         def find_shared_contacts(query: str = "", contact_or_chat: str = "", limit: int = 10) -> list[dict[str, Any]]:
             """Find contact cards (vCards) shared in chats by person's name, phone number, company, or profession.
@@ -250,7 +268,25 @@ class GeminiAgent:
             system_instruction=SYSTEM_PROMPT,
             tools=self._build_tools(),
             temperature=0.3,  # Low temperature for factual fidelity
+            automatic_function_calling=types.AutomaticFunctionCallingConfig(
+                maximum_remote_calls=15
+            ),
         )
+
+        def _extract_or_synthesize(active_chat: Any, resp: Any) -> str | None:
+            if resp and resp.text:
+                return format_for_whatsapp(resp.text.strip())
+            # If AFC reached its limit or ended on a function call without text
+            try:
+                logger.info("Empty response text from AFC. Prompting chat for final synthesis...")
+                synth_resp = active_chat.send_message(
+                    "Based on all tool outputs and information gathered above, please formulate your final concise answer to the user now."
+                )
+                if synth_resp and synth_resp.text:
+                    return format_for_whatsapp(synth_resp.text.strip())
+            except Exception as synth_err:
+                logger.warning("Synthesis prompt failed: %s", synth_err)
+            return None
 
         try:
             chat = self.client.chats.create(
@@ -259,8 +295,9 @@ class GeminiAgent:
             )
             response = chat.send_message(user_query)
 
-            if response and response.text:
-                return format_for_whatsapp(response.text.strip())
+            result = _extract_or_synthesize(chat, response)
+            if result:
+                return result
             return "I couldn't retrieve a response from Gemini. Please try again."
 
         except Exception as e:
@@ -274,8 +311,9 @@ class GeminiAgent:
                         config=config,
                     )
                     retry_resp = retry_chat.send_message(user_query)
-                    if retry_resp and retry_resp.text:
-                        return format_for_whatsapp(retry_resp.text.strip())
+                    retry_result = _extract_or_synthesize(retry_chat, retry_resp)
+                    if retry_result:
+                        return retry_result
                 except Exception as retry_err:
                     logger.warning("Retry after 429 wait failed: %s", retry_err)
 
@@ -291,8 +329,9 @@ class GeminiAgent:
                         config=config,
                     )
                     fallback_response = fallback_chat.send_message(user_query)
-                    if fallback_response and fallback_response.text:
-                        return format_for_whatsapp(fallback_response.text.strip())
+                    fallback_result = _extract_or_synthesize(fallback_chat, fallback_response)
+                    if fallback_result:
+                        return fallback_result
                 except Exception as fallback_err:
                     logger.exception("Fallback to gemini-3.5-flash-lite also failed: %s", fallback_err)
 

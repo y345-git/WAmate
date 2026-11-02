@@ -321,10 +321,11 @@ class DatabaseManager:
             sql_exact = """
             SELECT jid, name, push_name, phone_number, is_group, updated_at
             FROM contacts
-            WHERE LOWER(name) LIKE ?
+            WHERE (LOWER(name) LIKE ?
                OR LOWER(push_name) LIKE ?
                OR phone_number LIKE ?
-               OR jid LIKE ?
+               OR jid LIKE ?)
+              AND jid != 'status@broadcast'
             ORDER BY updated_at DESC
             LIMIT ?
             """
@@ -343,6 +344,7 @@ class DatabaseManager:
                 SELECT jid, name, push_name, phone_number, is_group, updated_at
                 FROM contacts
                 WHERE ({name_conds})
+                  AND jid != 'status@broadcast'
                 ORDER BY updated_at DESC
                 LIMIT ?
                 """
@@ -398,7 +400,7 @@ class DatabaseManager:
                 """
                 SELECT chat_jid
                 FROM messages
-                WHERE LOWER(chat_name) LIKE ?
+                WHERE LOWER(chat_name) LIKE ? AND chat_jid != 'status@broadcast'
                 GROUP BY chat_jid
                 ORDER BY MAX(timestamp) DESC
                 LIMIT 1
@@ -413,7 +415,7 @@ class DatabaseManager:
                 """
                 SELECT chat_jid
                 FROM messages
-                WHERE LOWER(sender_name) LIKE ?
+                WHERE LOWER(sender_name) LIKE ? AND chat_jid != 'status@broadcast'
                 GROUP BY chat_jid
                 ORDER BY MAX(timestamp) DESC
                 LIMIT 1
@@ -493,6 +495,7 @@ class DatabaseManager:
                     FROM messages_fts f
                     JOIN messages m ON f.rowid = m.rowid
                     WHERE messages_fts MATCH ?
+                      AND m.chat_jid != 'status@broadcast'
                       AND (m.chat_jid = ? OR m.sender_jid = ? OR LOWER(m.chat_name) LIKE ? OR LOWER(m.sender_name) LIKE ?)
                     ORDER BY m.timestamp DESC
                     LIMIT ?
@@ -505,6 +508,7 @@ class DatabaseManager:
                     FROM messages_fts f
                     JOIN messages m ON f.rowid = m.rowid
                     WHERE messages_fts MATCH ?
+                      AND m.chat_jid != 'status@broadcast'
                     ORDER BY m.timestamp DESC
                     LIMIT ?
                     """
@@ -538,7 +542,8 @@ class DatabaseManager:
                 SELECT id, chat_jid, chat_name, sender_jid, sender_name, text, timestamp,
                        is_from_me, media_type, media_filename, media_mimetype
                 FROM messages
-                WHERE (LOWER(text) LIKE ? OR LOWER(media_filename) LIKE ?)
+                WHERE chat_jid != 'status@broadcast'
+                  AND (LOWER(text) LIKE ? OR LOWER(media_filename) LIKE ?)
                   AND (chat_jid = ? OR sender_jid = ? OR LOWER(chat_name) LIKE ? OR LOWER(sender_name) LIKE ?)
                 ORDER BY timestamp DESC
                 LIMIT ?
@@ -549,7 +554,8 @@ class DatabaseManager:
                 SELECT id, chat_jid, chat_name, sender_jid, sender_name, text, timestamp,
                        is_from_me, media_type, media_filename, media_mimetype
                 FROM messages
-                WHERE LOWER(text) LIKE ? OR LOWER(media_filename) LIKE ?
+                WHERE chat_jid != 'status@broadcast'
+                  AND (LOWER(text) LIKE ? OR LOWER(media_filename) LIKE ?)
                 ORDER BY timestamp DESC
                 LIMIT ?
                 """
@@ -578,7 +584,7 @@ class DatabaseManager:
         """
         target_jid = self.resolve_chat_jid(chat_name_or_jid) if chat_name_or_jid else None
 
-        conditions = ["media_type = 'document'"]
+        conditions = ["media_type = 'document'", "chat_jid != 'status@broadcast'"]
         params: list[Any] = []
 
         if chat_name_or_jid:
@@ -664,7 +670,7 @@ class DatabaseManager:
         """Find contact cards (vCards) shared across WhatsApp chats by contact name, phone, or profession."""
         target_jid = self.resolve_chat_jid(chat_name_or_jid) if chat_name_or_jid else None
 
-        conditions = ["media_type = 'contact'"]
+        conditions = ["media_type = 'contact'", "chat_jid != 'status@broadcast'"]
         params: list[Any] = []
 
         if chat_name_or_jid:
@@ -721,7 +727,7 @@ class DatabaseManager:
         """Find polls created in chats, including questions and option choices."""
         target_jid = self.resolve_chat_jid(chat_name_or_jid) if chat_name_or_jid else None
 
-        conditions = ["media_type = 'poll'"]
+        conditions = ["media_type = 'poll'", "chat_jid != 'status@broadcast'"]
         params: list[Any] = []
 
         if chat_name_or_jid:
@@ -781,7 +787,7 @@ class DatabaseManager:
         """
         target_jid = self.resolve_chat_jid(chat_name_or_jid) if chat_name_or_jid else None
 
-        conditions = []
+        conditions = ["chat_jid != 'status@broadcast'"]
         params: list[Any] = []
 
         if media_type:
@@ -844,7 +850,7 @@ class DatabaseManager:
         SELECT id, chat_jid, chat_name, sender_jid, sender_name, text, timestamp, is_from_me, is_group,
                media_type, media_filename
         FROM messages
-        WHERE timestamp >= ?
+        WHERE timestamp >= ? AND chat_jid != 'status@broadcast'
         ORDER BY timestamp DESC
         LIMIT ?
         """
