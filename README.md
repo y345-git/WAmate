@@ -18,23 +18,23 @@ Operating **strictly inside your private self-chat**, WAmate captures, indexes, 
 ### 💬 See It In Action
 
 ```text
-You: !ask what was the color of kurta that jay shared me yesterday
+You: !ask what was the model of mechanical keyboard Alex recommended yesterday?
 WAmate: ⏳ [reacts immediately]
-WAmate: In your direct chat with Jay Patil yesterday, Jay shared photos of kurtas while discussing designs. The kurta features an olive-green base with intricate white floral embroidery on the collar and cuffs...
+WAmate: In your direct chat with Alex yesterday, he shared 3 photos of mechanical keyboards while discussing switch types. The model he recommended is the Keychron Q1 Pro with wireless Bluetooth, hot-swappable switches, and a custom aluminum knob...
 WAmate: ✅
 
-You: !get 360 A Jay enterprises
+You: !get Q3 financial summary
 WAmate: ⏳
 WAmate: [Delivers the actual PDF file directly to your chat]
-📄 360 A Jay enterprises.pdf (160 KB)
+📄 Q3_Financial_Summary_2026.pdf (245 KB)
 WAmate: ✅
 
 You: !status
 WAmate: 📊 WAmate Second Brain Status
-• Messages Synced: 44,818
-• Contacts & Groups: 8,641 (158 groups)
-• History Date Range: 2024-09-13 → 2026-11-02
-• Database Size: 83.7 MB
+• Messages Synced: 28,450
+• Contacts & Groups: 1,120 (36 groups)
+• History Date Range: 2024-01-10 → 2026-03-15
+• Database Size: 48.2 MB
 • Sync Status: Fully indexed & Real-time active ✅
 ```
 
@@ -46,7 +46,7 @@ WAmate: 📊 WAmate Second Brain Status
 * ⚡ **Ultra-Fast Batch Indexing (1,000+ msgs/sec):** High-performance SQLite batch engine syncs tens of thousands of past messages in seconds with a live console progress counter.
 * 📄 **Actual Document Delivery (`!get` / `!send`):** Automatically finds files on WhatsApp's network and delivers the real document (`.pdf`, `.docx`, `.xlsx`, etc.) straight into your chat.
 * 👁️ **Multimodal AI Vision & Persistent OCR:** Powered by Google Gemini to analyze scanned receipts, handwritten notes, whiteboards, bills, and visual items (clothing colors, objects, payment screenshots). OCR results are cached permanently in SQLite for **0ms repeat queries with zero API costs**.
-* 🔗 **Link Preview & Product Card Search:** Automatically indexes webpage titles, descriptions, and brand metadata from shared links (Myntra, Amazon, H&M, Wrogn, Wildcraft, news articles), making shared products instantly searchable by keywords.
+* 🔗 **Link Preview & Web Metadata Search:** Automatically indexes webpage titles, descriptions, and metadata from shared URLs (GitHub repositories, YouTube videos, Amazon/e-commerce products, technical blogs, news articles), making shared links instantly searchable by topic or keyword.
 * 🆔 **Cryptographic WhatsApp LID Resolution:** Automatically cross-references WhatsApp's 15-digit privacy LIDs (`@lid`) against your phone address book, accurately identifying real contact names in group chats.
 * ⏳ **Real-Time Visual Feedback:** Reacts immediately with an hourglass **`⏳`** on your message bubble when a query begins, switching to a checkmark **`✅`** once completed.
 * 🎙️ **Rich Media Aware:** Indexes voice note durations, videos, images, shared vCard contact cards, and polls with their voting options.
@@ -63,9 +63,9 @@ All commands run directly in your WhatsApp **"Message yourself"** chat:
 
 | Command | Action | Example |
 | :--- | :--- | :--- |
-| `!ask <question>` | Ask anything about your messages, chats, or media | `!ask what did Patil Ayush message me today?` |
-| `!get <filename>` | Locate and deliver the real document file directly to you | `!get tax invoice 26200792` |
-| `!send <filename>` | Alternative trigger to fetch and deliver a file | `!send 360 A Jay enterprises pdf` |
+| `!ask <question>` | Ask anything about your messages, chats, or media | `!ask what did Alex message me about the project deadline?` |
+| `!get <filename>` | Locate and deliver the real document file directly to you | `!get Q3 financial summary pdf` |
+| `!send <filename>` | Alternative trigger to fetch and deliver a file | `!send project roadmap 2026` |
 | `!status` / `!stats` | View real-time database stats, message counts, and sync state | `!status` |
 | `!unlink` | Unlink current WhatsApp account (keeps message history database) | `!unlink` |
 | `!unlink --delete-data` | Unlink account and wipe all databases, sessions, and downloads | `!reset` |
@@ -113,7 +113,7 @@ flowchart TD
     Phone -->|HistorySync Batches| WASock
     WASock -->|Batch Index Messages & LIDs| DB
 
-    SelfChat -->|'!ask what did Jay send me?'| WASock
+    SelfChat -->|'!ask what did Alex send me?'| WASock
     WASock -->|1. React ⏳ on bubble| SelfChat
     WASock -->|2. Dispatch query| Agent
     Agent <-->|Tools: search_history, inspect_ocr, find_media| DB
@@ -172,13 +172,13 @@ GEMINI_MODEL=gemini-3.5-flash-lite
 # [OPTIONAL] Command Prefix in Self-Chat (default: !ask)
 COMMAND_PREFIX=!ask
 
-# [OPTIONAL] Phone Number for 8-digit Pairing Code (no '+' or dashes)
-# e.g., 919876543210 (Leave blank to use console QR code)
+# [OPTIONAL] Phone Number for 8-digit Pairing Code (country code + number, no '+' or dashes)
+# e.g., 14155552671 (Leave blank to use console QR code)
 PHONE_NUMBER=
 
 # Data & Database Directory
 DATA_DIR=./data
-TZ=Asia/Kolkata
+TZ=UTC
 LOG_LEVEL=INFO
 ```
 
@@ -221,22 +221,22 @@ Once WAmate completes its initial sync, try these queries in your self-chat:
 
 * **Conversations & Catch-ups:**
   * `!ask summarize my chats from today`
-  * `!ask what did Patil Ayush tell me about the meeting yesterday?`
-  * `!ask who messaged me about the server downtime?`
-* **Clothing, Visual Items & OCR:**
-  * `!ask what was the color of the kurta Jay shared?`
-  * `!ask what is the total amount in the Paytm payment screenshot sent to Nikhil?`
-  * `!ask read the handwritten note photo sent in Work group`
+  * `!ask what did Alex tell me about the project deadline yesterday?`
+  * `!ask who messaged me about the server maintenance window?`
+* **Visual Items, Photos & OCR:**
+  * `!ask what was the model of the keyboard Alex shared?`
+  * `!ask what is the total amount in the payment receipt screenshot sent by Sarah?`
+  * `!ask read the handwritten whiteboard photo sent in Project Alpha group`
 * **Documents & Actual Delivery:**
-  * `!get exam timetable pdf`
-  * `!send the latest quotation from Jay Enterprises`
-  * `!ask what are the payment terms mentioned in the PO 360 A document?`
+  * `!get client onboarding checklist pdf`
+  * `!send the latest contract agreement from Acme Corp`
+  * `!ask what are the payment terms mentioned in the vendor agreement document?`
 * **Products & Shared Links:**
-  * `!ask what all jacket and hoodie links did Jay share today?`
-  * `!ask find the Amazon link for the monitor sent last week`
+  * `!ask what all monitor and desk setup links did David share today?`
+  * `!ask find the article link for system design sent last week`
 * **Contacts & Polls:**
-  * `!ask find the contact card for Dr. Patil`
-  * `!ask what were the options in the weekend trip poll?`
+  * `!ask find the contact card for Dr. Smith`
+  * `!ask what were the options in the team lunch poll?`
 
 ---
 
