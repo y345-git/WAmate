@@ -25,6 +25,12 @@ class Config:
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()
     TZ: str = os.getenv("TZ", "Asia/Kolkata").strip()
 
+    # Idle Background OCR Configuration
+    ENABLE_IDLE_OCR: bool = os.getenv("ENABLE_IDLE_OCR", "true").lower() in ("true", "1", "yes")
+    IDLE_OCR_LOOKBACK_HOURS: int = int(os.getenv("IDLE_OCR_LOOKBACK_HOURS", "48"))
+    IDLE_OCR_DELAY_SECONDS: int = int(os.getenv("IDLE_OCR_DELAY_SECONDS", "12"))
+    IDLE_OCR_MAX_PER_RUN: int = int(os.getenv("IDLE_OCR_MAX_PER_RUN", "100"))
+
     @classmethod
     def ensure_data_dir(cls) -> None:
         """Create the data directory if it does not already exist."""

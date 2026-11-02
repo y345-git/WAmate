@@ -2,6 +2,8 @@ import os
 import logging
 import re
 import time
+import threading
+from datetime import datetime
 from typing import Any
 import segno
 from pathlib import Path
@@ -54,6 +56,12 @@ class WhatsAppBot:
 
         # Link Gemini agent back to this bot client for document sending & extraction tools
         self.gemini.bot_client = self
+
+        # Idle Background OCR Worker synchronization & state
+        self._stop_worker_event = threading.Event()
+        self._user_active_event = threading.Event()
+        self._idle_worker_thread: threading.Thread | None = None
+        self._idle_worker_stats = {"processed": 0, "last_active": None}
 
         self._register_handlers()
 
@@ -392,12 +400,17 @@ class WhatsAppBot:
 
             stats = self.db.get_stats()
             sync_state = "Fully indexed & Real-time active ✅" if getattr(self, "history_sync_completed", False) else "Indexed (Real-time active) ✅"
+            idle_state = "Active 🟢" if Config.ENABLE_IDLE_OCR else "Disabled"
+            if Config.ENABLE_IDLE_OCR and self._idle_worker_stats["processed"] > 0:
+                idle_state += f" ({self._idle_worker_stats['processed']} pre-cached)"
+
             reply = (
                 "📊 *WAmate Second Brain Status*\n\n"
                 f"• *Messages Synced:* {stats['total_messages']:,}\n"
                 f"• *Contacts & Groups:* {stats['total_contacts']:,} ({stats['total_groups']} groups)\n"
                 f"• *History Date Range:* {stats['oldest_date']} → {stats['newest_date']}\n"
                 f"• *OCR Cached Media:* {stats['total_ocr_cached']}\n"
+                f"• *Idle OCR Worker:* {idle_state}\n"
                 f"• *Database Size:* {stats['db_size_mb']} MB\n"
                 f"• *Sync Status:* {sync_state}\n"
                 f"• *AI Model:* `{Config.GEMINI_MODEL}`\n\n"
@@ -441,7 +454,7 @@ class WhatsAppBot:
                 f"• `{self.prefix} get me the latest invoices`\n"
                 f"• `{self.prefix} send me the Reimagine 2026 pdf`\n"
                 f"• `!get invoices`\n"
-                f"• `{self.prefix} what did Patil Ayush message me?`\n"
+                f"• `{self.prefix} what did Alex message me?`\n"
                 f"• `{self.prefix} summarize what happened today`"
             )
             try:
@@ -454,6 +467,8 @@ class WhatsAppBot:
                     self.dedup.add(resp.ID)
             return
 
+        # Pause any background idle workers while user is actively querying
+        self._user_active_event.set()
         logger.info("Processing self-chat query: '%s'", query)
 
         # Show real-time typing indicator and hourglass reaction in WhatsApp self-chat
@@ -493,6 +508,7 @@ class WhatsAppBot:
                 except Exception as e2:
                     logger.exception("Failed to send response to self-chat: %s", e2)
         finally:
+            self._user_active_event.clear()
             # Clear typing indicator and update reaction to checkmark
             try:
                 client.send_chat_presence(chat_jid, ChatPresence.CHAT_PRESENCE_PAUSED, ChatPresenceMedia.CHAT_PRESENCE_MEDIA_TEXT)
@@ -921,6 +937,163 @@ class WhatsAppBot:
 
         return "Found matching images, but could not download them from WhatsApp servers (links may have expired)."
 
+    def _start_idle_ocr_worker(self) -> None:
+        """Launch the background idle OCR worker thread if enabled."""
+        if not Config.ENABLE_IDLE_OCR:
+            logger.info("Idle Background OCR is disabled (ENABLE_IDLE_OCR=false).")
+            return
+
+        if self._idle_worker_thread and self._idle_worker_thread.is_alive():
+            return
+
+        self._stop_worker_event.clear()
+        self._idle_worker_thread = threading.Thread(
+            target=self._idle_ocr_worker, daemon=True, name="IdleOCRWorker"
+        )
+        self._idle_worker_thread.start()
+        logger.info(
+            "Idle Background OCR Worker started (lookback: %dh, delay: %ds, max/cycle: %d).",
+            Config.IDLE_OCR_LOOKBACK_HOURS,
+            Config.IDLE_OCR_DELAY_SECONDS,
+            Config.IDLE_OCR_MAX_PER_RUN,
+        )
+
+    def _idle_ocr_worker(self) -> None:
+        """Background thread that pre-caches OCR analysis for recent images while idle."""
+        logger.info("Idle OCR worker active. Waiting 20s for connection warmup...")
+        # Warmup delay
+        if self._stop_worker_event.wait(20.0):
+            return
+
+        while not self._stop_worker_event.is_set():
+            # If client is not connected, wait
+            if not getattr(self.client, "is_connected", False):
+                if self._stop_worker_event.wait(5.0):
+                    break
+                continue
+
+            # If user is currently issuing commands in self-chat, yield immediately
+            if self._user_active_event.is_set():
+                if self._stop_worker_event.wait(3.0):
+                    break
+                continue
+
+            # Fetch uncached candidates from the last lookback_hours
+            try:
+                candidates = self.db.get_uncached_media_candidates(
+                    lookback_hours=Config.IDLE_OCR_LOOKBACK_HOURS,
+                    limit=Config.IDLE_OCR_MAX_PER_RUN,
+                )
+            except Exception as e:
+                logger.warning("Idle OCR: error querying uncached candidates: %s", e)
+                candidates = []
+
+            if not candidates:
+                # No candidates to process; sleep 60s before checking again
+                if self._stop_worker_event.wait(60.0):
+                    break
+                continue
+
+            logger.info(
+                "Idle OCR Worker found %d uncached media item(s) from past %d hours.",
+                len(candidates),
+                Config.IDLE_OCR_LOOKBACK_HOURS,
+            )
+
+            processed_in_cycle = 0
+            for item in candidates:
+                if self._stop_worker_event.is_set():
+                    break
+
+                # If user starts querying, pause immediately and yield
+                while self._user_active_event.is_set():
+                    logger.debug("Idle OCR paused: user is actively querying self-chat.")
+                    if self._stop_worker_event.wait(3.0):
+                        break
+
+                if self._stop_worker_event.is_set():
+                    break
+
+                msg_id = item["id"]
+                chat_name = item.get("chat_name") or item.get("chat_jid") or "Unknown"
+                sender_name = item.get("sender_name") or "Unknown"
+                mimetype = item.get("media_mimetype") or "image/jpeg"
+
+                # Check if already cached (could have been processed on-demand)
+                if self.db.get_ocr_cache(msg_id):
+                    continue
+
+                # Attempt to download image bytes
+                file_path, real_filename, detected_mimetype, err = self.download_media_by_id(msg_id)
+                if err or not file_path:
+                    err_str = str(err).lower()
+                    if any(k in err_str for k in ["410", "expired", "payload", "empty"]):
+                        self.db.save_ocr_cache(msg_id, "[MEDIA_EXPIRED]", mimetype=mimetype)
+                        logger.debug("Idle OCR: Marked expired image %s as [MEDIA_EXPIRED]", msg_id)
+                    else:
+                        self.db.save_ocr_cache(msg_id, "[OCR_SKIPPED]", mimetype=mimetype)
+                        logger.debug("Idle OCR: Skipping un-downloadable media %s (%s)", msg_id, err)
+                    continue
+
+                try:
+                    with open(file_path, "rb") as f:
+                        img_bytes = f.read()
+
+                    if not img_bytes:
+                        self.db.save_ocr_cache(msg_id, "[MEDIA_EXPIRED]", mimetype=mimetype)
+                        continue
+
+                    prompt = (
+                        "Transcribe and visually describe all content, objects, text, tables, and colors in this image in detail:\n"
+                        "1. Full text transcription (headings, labels, receipts, handwritten notes, printed text, numbers, codes, prices, dates, totals).\n"
+                        "2. Visual objects & scene description (items, products, clothing types/colors/patterns, devices, documents, people, locations).\n"
+                        "3. Key details (brands, logos, model numbers, payment/transaction IDs, addresses, status indicators).\n"
+                        "Keep it structured and concise for search indexing."
+                    )
+
+                    analysis = self.gemini.ocr_file_content(
+                        img_bytes, mimetype=detected_mimetype or mimetype, prompt=prompt
+                    )
+
+                    if analysis and not analysis.startswith("OCR processing error"):
+                        self.db.save_ocr_cache(msg_id, analysis, mimetype=detected_mimetype or mimetype)
+                        processed_in_cycle += 1
+                        self._idle_worker_stats["processed"] += 1
+                        self._idle_worker_stats["last_active"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        logger.info(
+                            "Idle OCR: Pre-cached image %s from '%s' (%d/%d in cycle).",
+                            msg_id,
+                            chat_name,
+                            processed_in_cycle,
+                            len(candidates),
+                        )
+                    else:
+                        logger.warning("Idle OCR: Gemini returned error or empty for %s: %s", msg_id, analysis)
+                        time.sleep(5.0)
+
+                except Exception as ex:
+                    logger.warning("Idle OCR error on image %s: %s", msg_id, ex)
+
+                # Rate-limit delay before processing next item
+                if self._stop_worker_event.wait(float(Config.IDLE_OCR_DELAY_SECONDS)):
+                    break
+
+            # Sleep 60 seconds between scan cycles
+            if self._stop_worker_event.wait(60.0):
+                break
+
+    def stop(self) -> None:
+        """Stop background workers and disconnect the WhatsApp client."""
+        logger.info("Stopping WhatsApp bot and background workers...")
+        self._stop_worker_event.set()
+        if self._idle_worker_thread and self._idle_worker_thread.is_alive():
+            self._idle_worker_thread.join(timeout=2.0)
+        try:
+            if hasattr(self, "client") and self.client.is_connected:
+                self.client.disconnect()
+        except Exception as e:
+            logger.debug("Error disconnecting client: %s", e)
+
     def start(self) -> None:
         """Start the WhatsApp bot connection."""
         # If phone number is configured and client is not yet logged in, generate Pairing Code
@@ -944,12 +1117,18 @@ class WhatsAppBot:
             except Exception as e:
                 logger.error("Failed to generate pairing code: %s. Falling back to QR code...", e)
 
+        # Launch idle background OCR pre-caching worker
+        self._start_idle_ocr_worker()
+
         logger.info("Starting WhatsApp client connection...")
         self.client.connect()
 
     def unlink(self, delete_data: bool = False) -> str:
         """Unlink the WhatsApp account, remove session credentials, and optionally delete all saved messages/data."""
         logger.info("Unlinking WhatsApp account (delete_data=%s)...", delete_data)
+        self._stop_worker_event.set()
+        if self._idle_worker_thread and self._idle_worker_thread.is_alive():
+            self._idle_worker_thread.join(timeout=2.0)
 
         # 1. Server-side logout via neonize
         try:

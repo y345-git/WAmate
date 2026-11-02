@@ -45,7 +45,7 @@ WAmate: 📊 WAmate Second Brain Status
 * 🔒 **100% Self-Chat Isolation:** Listens **only** in your personal "Message yourself" ("You") chat. Never monitors, snoops on, or sends messages to external contacts or group chats.
 * ⚡ **Ultra-Fast Batch Indexing (1,000+ msgs/sec):** High-performance SQLite batch engine syncs tens of thousands of past messages in seconds with a live console progress counter.
 * 📄 **Actual Document Delivery (`!get` / `!send`):** Automatically finds files on WhatsApp's network and delivers the real document (`.pdf`, `.docx`, `.xlsx`, etc.) straight into your chat.
-* 👁️ **Multimodal AI Vision & Persistent OCR:** Powered by Google Gemini to analyze scanned receipts, handwritten notes, whiteboards, bills, and visual items (clothing colors, objects, payment screenshots). OCR results are cached permanently in SQLite for **0ms repeat queries with zero API costs**.
+* 👁️ **Multimodal AI Vision & Idle OCR Pre-Caching:** Powered by Google Gemini to analyze scanned receipts, handwritten notes, whiteboards, bills, and visual items (clothing colors, objects, payment screenshots). Includes a smart **Idle OCR Background Worker** that automatically pre-indexes recent photos with rate throttling, caching results permanently in SQLite for **0ms queries with zero API costs**.
 * 🔗 **Link Preview & Web Metadata Search:** Automatically indexes webpage titles, descriptions, and metadata from shared URLs (GitHub repositories, YouTube videos, Amazon/e-commerce products, technical blogs, news articles), making shared links instantly searchable by topic or keyword.
 * 🆔 **Cryptographic WhatsApp LID Resolution:** Automatically cross-references WhatsApp's 15-digit privacy LIDs (`@lid`) against your phone address book, accurately identifying real contact names in group chats.
 * ⏳ **Real-Time Visual Feedback:** Reacts immediately with an hourglass **`⏳`** on your message bubble when a query begins, switching to a checkmark **`✅`** once completed.
@@ -180,6 +180,11 @@ PHONE_NUMBER=
 DATA_DIR=./data
 TZ=UTC
 LOG_LEVEL=INFO
+
+# [OPTIONAL] Idle Background OCR Pre-caching (default: true)
+ENABLE_IDLE_OCR=true
+IDLE_OCR_LOOKBACK_HOURS=48
+IDLE_OCR_DELAY_SECONDS=12
 ```
 
 ---

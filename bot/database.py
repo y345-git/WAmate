@@ -2,6 +2,7 @@ import sqlite3
 import json
 import logging
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -248,7 +249,12 @@ class DatabaseManager:
             return None
         with self._get_connection() as conn:
             row = conn.execute("SELECT ocr_text FROM media_ocr_cache WHERE msg_id = ?", (msg_id,)).fetchone()
-            return row["ocr_text"] if row else None
+            if not row:
+                return None
+            val = row["ocr_text"]
+            if val.startswith(("[MEDIA_", "[OCR_SKIPPED")):
+                return None
+            return val
 
     def save_ocr_cache(self, msg_id: str, ocr_text: str, mimetype: str = "") -> None:
         """Save OCR analysis for a media message into cache and update messages text for FTS indexing."""
@@ -267,15 +273,49 @@ class DatabaseManager:
                 """,
                 (msg_id, ocr_text, mimetype, now),
             )
-            # Append OCR text snippet to messages.text so SQLite FTS5 trigger (messages_au) indexes it
-            row = conn.execute("SELECT text FROM messages WHERE id = ?", (msg_id,)).fetchone()
-            if row:
-                current_text = row["text"] or ""
-                if "[OCR:" not in current_text:
-                    ocr_snippet = ocr_text.strip()
-                    updated_text = f"{current_text}\n[OCR: {ocr_snippet}]" if current_text else f"[OCR: {ocr_snippet}]"
-                    conn.execute("UPDATE messages SET text = ? WHERE id = ?", (updated_text, msg_id))
+            # Only append OCR text snippet to messages.text if it is actual OCR text (not an error/expired marker)
+            if not ocr_text.startswith(("[MEDIA_", "[OCR_SKIPPED")):
+                row = conn.execute("SELECT text FROM messages WHERE id = ?", (msg_id,)).fetchone()
+                if row:
+                    current_text = row["text"] or ""
+                    if "[OCR:" not in current_text:
+                        ocr_snippet = ocr_text.strip()
+                        updated_text = f"{current_text}\n[OCR: {ocr_snippet}]" if current_text else f"[OCR: {ocr_snippet}]"
+                        conn.execute("UPDATE messages SET text = ? WHERE id = ?", (updated_text, msg_id))
             conn.commit()
+
+    def get_uncached_media_candidates(self, lookback_hours: int = 48, limit: int = 50) -> list[dict[str, Any]]:
+        """Fetch media messages that have not yet been processed by OCR within lookback_hours."""
+        cutoff_ts = int(time.time()) - (lookback_hours * 3600)
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT m.id, m.chat_jid, m.sender_jid, m.timestamp, m.text, 
+                       m.media_type, m.media_filename, m.media_mimetype,
+                       m.chat_name, m.sender_name
+                FROM messages m
+                LEFT JOIN media_ocr_cache c ON m.id = c.msg_id
+                WHERE c.msg_id IS NULL
+                  AND (m.media_type LIKE '%image%' OR m.media_mimetype LIKE 'image/%')
+                  AND m.timestamp >= ?
+                  AND m.raw_message IS NOT NULL
+                ORDER BY m.timestamp DESC
+                LIMIT ?
+                """,
+                (cutoff_ts, limit),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_ocr_stats(self) -> dict[str, int]:
+        """Return counts of processed and skipped OCR items."""
+        with self._get_connection() as conn:
+            total_cached = conn.execute(
+                "SELECT COUNT(*) FROM media_ocr_cache WHERE ocr_text NOT LIKE '[MEDIA_%' AND ocr_text NOT LIKE '[OCR_SKIPPED%'"
+            ).fetchone()[0]
+            total_expired = conn.execute(
+                "SELECT COUNT(*) FROM media_ocr_cache WHERE ocr_text LIKE '[MEDIA_%' OR ocr_text LIKE '[OCR_SKIPPED%'"
+            ).fetchone()[0]
+            return {"valid_ocr": total_cached, "expired_or_skipped": total_expired}
 
     def backfill_contact_names(self) -> None:
         """Backfill chat_name and sender_name across messages from contacts table."""
@@ -1057,7 +1097,9 @@ class DatabaseManager:
             total_groups = cursor.execute("SELECT COUNT(*) FROM contacts WHERE is_group = 1").fetchone()[0]
             total_ocr = 0
             try:
-                total_ocr = cursor.execute("SELECT COUNT(*) FROM media_ocr_cache").fetchone()[0]
+                total_ocr = cursor.execute(
+                    "SELECT COUNT(*) FROM media_ocr_cache WHERE ocr_text NOT LIKE '[MEDIA_%' AND ocr_text NOT LIKE '[OCR_SKIPPED%'"
+                ).fetchone()[0]
             except Exception:
                 pass
 
