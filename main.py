@@ -9,6 +9,28 @@ from bot.gemini_agent import GeminiAgent
 from bot.whatsapp_client import WhatsAppBot
 
 
+class WhatsmeowNoiseFilter(logging.Filter):
+    """Filter out noisy, harmless internal warnings from whatsmeow (status stories decryption, socket EOF on close)."""
+
+    IGNORED_SNIPPETS = (
+        "in status@broadcast",
+        "failed to close WebSocket",
+        "failed to read frame header: EOF",
+        "no sender key for",
+        "Set status notification has unexpected content",
+        "received message with old counter",
+        "use of closed network connection",
+        "connection reset by peer",
+        "broken pipe",
+        "websocket: close",
+        "failed to decrypt group message",
+    )
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        return not any(snippet in msg for snippet in self.IGNORED_SNIPPETS)
+
+
 def setup_logging():
     log_level = getattr(logging, Config.LOG_LEVEL, logging.INFO)
     logging.basicConfig(
@@ -16,6 +38,23 @@ def setup_logging():
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
+
+    noise_filter = WhatsmeowNoiseFilter()
+    for handler in logging.root.handlers:
+        handler.addFilter(noise_filter)
+
+    for logger_name in ["whatsmeow", "Whatsmeow", "whatsmeow.Client", "whatsmeow.Client.Socket", "neonize"]:
+        l = logging.getLogger(logger_name)
+        l.addFilter(noise_filter)
+
+    try:
+        import neonize.utils.log as _nlog
+        if hasattr(_nlog, "clientlogger"):
+            _nlog.clientlogger.addFilter(noise_filter)
+        if hasattr(_nlog, "dblogger"):
+            _nlog.dblogger.addFilter(noise_filter)
+    except Exception:
+        pass
 
 
 def unlink_account(delete_data: bool = False) -> None:
@@ -170,6 +209,16 @@ def main():
 
     def shutdown(signum, frame):
         logger.info("Received termination signal, shutting down gracefully...")
+        for log_name in ["whatsmeow", "Whatsmeow", "whatsmeow.Client", "whatsmeow.Client.Socket", "neonize"]:
+            logging.getLogger(log_name).setLevel(logging.CRITICAL)
+        try:
+            import neonize.utils.log as _nlog
+            if hasattr(_nlog, "clientlogger"):
+                _nlog.clientlogger.setLevel(logging.CRITICAL)
+            if hasattr(_nlog, "dblogger"):
+                _nlog.dblogger.setLevel(logging.CRITICAL)
+        except Exception:
+            pass
         try:
             bot.client.disconnect()
         except Exception:
