@@ -8,7 +8,7 @@ from pathlib import Path
 from neonize.client import NewClient
 from neonize.events import ConnectedEv, HistorySyncEv, MessageEv, LoggedOutEv
 from neonize.proto.waE2E.WAWebProtobufsE2E_pb2 import Message
-from neonize.proto.Neonize_pb2 import ChatPresence
+from neonize.utils.enum import ChatPresence, ChatPresenceMedia
 from neonize.utils import ClientName
 
 from .config import Config
@@ -456,11 +456,21 @@ class WhatsAppBot:
 
         logger.info("Processing self-chat query: '%s'", query)
 
-        # Show real-time typing indicator in WhatsApp self-chat
+        # Show real-time typing indicator and hourglass reaction in WhatsApp self-chat
+        source = message.Info.MessageSource
+        chat = source.Chat
+        sender = source.Sender
+
         try:
-            client.send_chat_presence(chat_jid, ChatPresence.COMPOSING, ChatPresence.TEXT)
+            client.send_chat_presence(chat_jid, ChatPresence.CHAT_PRESENCE_COMPOSING, ChatPresenceMedia.CHAT_PRESENCE_MEDIA_TEXT)
         except Exception as pe:
             logger.debug("Could not send typing presence indicator: %s", pe)
+
+        try:
+            react_pending = client.build_reaction(chat, sender, msg_id, "⏳")
+            client.send_message(chat_jid, react_pending)
+        except Exception as re_err:
+            logger.debug("Could not send pending reaction: %s", re_err)
 
         try:
             # Generate answer using Gemini with access to the database
@@ -483,15 +493,21 @@ class WhatsAppBot:
                 except Exception as e2:
                     logger.exception("Failed to send response to self-chat: %s", e2)
         finally:
-            # Clear typing indicator
+            # Clear typing indicator and update reaction to checkmark
             try:
-                client.send_chat_presence(chat_jid, ChatPresence.PAUSED, ChatPresence.TEXT)
+                client.send_chat_presence(chat_jid, ChatPresence.CHAT_PRESENCE_PAUSED, ChatPresenceMedia.CHAT_PRESENCE_MEDIA_TEXT)
+            except Exception:
+                pass
+            try:
+                react_done = client.build_reaction(chat, sender, msg_id, "✅")
+                client.send_message(chat_jid, react_done)
             except Exception:
                 pass
 
     def sync_address_book_contacts(self) -> int:
-        """Sync contacts from whatsmeow's session store (whatsmeow_contacts) into messages database.
-        whatsmeow captures all contacts saved in the user's phone contact book (full_name).
+        """Sync contacts and LID mappings from whatsmeow's session store into messages database.
+        whatsmeow captures all contacts saved in the user's phone contact book (full_name)
+        and the cryptographic LID-to-phone number map.
         """
         import sqlite3
         if not Path(self.session_db_path).exists():
@@ -502,7 +518,6 @@ class WhatsAppBot:
             contacts = sc.execute(
                 "SELECT their_jid, full_name, first_name, push_name, business_name FROM whatsmeow_contacts"
             ).fetchall()
-            s_conn.close()
 
             synced = 0
             for their_jid, full_name, first_name, push_name, business_name in contacts:
@@ -523,8 +538,31 @@ class WhatsAppBot:
                     )
                     synced += 1
 
+            # Sync LID to phone number mappings
+            try:
+                lid_rows = sc.execute("SELECT lid, pn FROM whatsmeow_lid_map").fetchall()
+                lid_contacts = []
+                for lid, pn in lid_rows:
+                    lid_jid = f"{lid}@lid"
+                    pn_jid = f"{pn}@s.whatsapp.net"
+                    c = self.db.get_contact(pn_jid)
+                    name = (c.get("name") or c.get("push_name")) if c else None
+                    lid_contacts.append({
+                        "jid": lid_jid,
+                        "name": name,
+                        "phone_number": pn,
+                        "is_group": False,
+                    })
+                if lid_contacts:
+                    self.db.upsert_contacts_batch(lid_contacts)
+                    synced += len(lid_contacts)
+            except Exception as le:
+                logger.debug("LID map sync notice: %s", le)
+
+            s_conn.close()
+
             self.db.backfill_contact_names()
-            logger.info("Synchronized %d phone address book contacts into database.", synced)
+            logger.info("Synchronized %d phone contacts & LID mappings into database.", synced)
             return synced
         except Exception as e:
             logger.exception("Error syncing address book contacts from whatsmeow session: %s", e)

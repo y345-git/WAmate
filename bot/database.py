@@ -283,16 +283,22 @@ class DatabaseManager:
             conn.execute("""
             UPDATE messages
             SET chat_name = (
-                SELECT name FROM contacts WHERE contacts.jid = messages.chat_jid AND contacts.name IS NOT NULL AND contacts.name != ''
+                SELECT COALESCE(NULLIF(contacts.name, ''), NULLIF(contacts.push_name, ''))
+                FROM contacts WHERE contacts.jid = messages.chat_jid
             )
-            WHERE chat_jid IN (SELECT jid FROM contacts WHERE name IS NOT NULL AND name != '');
+            WHERE chat_jid IN (
+                SELECT jid FROM contacts WHERE (name IS NOT NULL AND name != '') OR (push_name IS NOT NULL AND push_name != '')
+            );
             """)
             conn.execute("""
             UPDATE messages
             SET sender_name = (
-                SELECT name FROM contacts WHERE contacts.jid = messages.sender_jid AND contacts.name IS NOT NULL AND contacts.name != ''
+                SELECT COALESCE(NULLIF(contacts.name, ''), NULLIF(contacts.push_name, ''), contacts.phone_number)
+                FROM contacts WHERE contacts.jid = messages.sender_jid
             )
-            WHERE is_from_me = 0 AND sender_jid IN (SELECT jid FROM contacts WHERE name IS NOT NULL AND name != '');
+            WHERE is_from_me = 0 AND sender_jid IN (
+                SELECT jid FROM contacts WHERE (name IS NOT NULL AND name != '') OR (push_name IS NOT NULL AND push_name != '') OR (phone_number IS NOT NULL AND phone_number != '')
+            );
             """)
             conn.commit()
 
