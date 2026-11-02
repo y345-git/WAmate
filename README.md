@@ -183,6 +183,34 @@ Open your WhatsApp and go to your **"Message yourself"** chat (the chat with you
 | `!ask what does the latest pdf in Education contain?` | Reads the PDF (even scanned PDFs) with multimodal OCR and gives a clean summary |
 | `!ask find the contact card for Dr. Patil` | Searches all shared vCard contact cards and returns phone number & details |
 | `!ask who messaged me recently about the server downtime?` | Searches across all chats and reports exact timestamps, senders, and quotes |
+| `!unlink` | Unlinks current WhatsApp account (preserves saved message database) |
+| `!unlink --delete-data` | Unlinks WhatsApp account AND wipes all saved messages, contacts, and media |
+
+---
+
+## 🔄 Unlinking & Switching Accounts
+
+WAmate makes it easy to unlink your account or switch to a new phone number at any time, either directly from WhatsApp chat or via terminal CLI.
+
+### Option 1: Directly from WhatsApp Self-Chat
+* **Unlink Account (keep database):**
+  Send `!unlink` (or `!logout`) in your self-chat.
+* **Unlink & Wipe All Data:**
+  Send `!unlink --delete-data` (or `!reset`) in your self-chat.
+
+### Option 2: From the Terminal CLI
+```bash
+# Unlink account only (prompts for confirmation; message history preserved)
+python3 main.py --unlink
+
+# Unlink account and wipe all databases & cached media
+python3 main.py --unlink --delete-data
+
+# Fast reset without confirmation prompts (useful for scripts / Docker)
+python3 main.py --reset -y
+```
+
+Once unlinked, simply run `python3 main.py` to link a brand-new WhatsApp account!
 
 ---
 

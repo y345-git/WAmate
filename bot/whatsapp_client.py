@@ -1,3 +1,4 @@
+import os
 import logging
 import re
 import time
@@ -284,6 +285,42 @@ class WhatsAppBot:
             return
 
         text_lower = text.lower().strip()
+
+        # Check for account unlinking / logout commands in self-chat
+        unlink_triggers = ["!unlink", "!logout", "!reset"]
+        if any(text_lower.startswith(ut) for ut in unlink_triggers):
+            if self.dedup.contains(msg_id):
+                return
+            self.dedup.add(msg_id)
+
+            delete_data = any(k in text_lower for k in ["delete-data", "--delete-data", "purge", "all", "wipe", "reset", "clear-data"])
+
+            if delete_data:
+                reply = (
+                    "⚠️ *Unlinking Account & Wiping Data...*\n\n"
+                    "• WhatsApp account has been disconnected and unlinked.\n"
+                    "• All saved message history, contacts, and downloaded files have been deleted.\n"
+                    "• To link a new account, start `python3 main.py` in your terminal to scan a new QR code or enter a pairing code."
+                )
+            else:
+                reply = (
+                    "⚠️ *Unlinking Account...*\n\n"
+                    "• WhatsApp account has been disconnected and unlinked.\n"
+                    "• Your saved message history is preserved in the local database.\n"
+                    "• To link a new account, start `python3 main.py` in your terminal to scan a new QR code or enter a pairing code."
+                )
+
+            try:
+                client.reply_message(reply, message)
+                time.sleep(1.5)
+            except Exception as e:
+                logger.warning("Failed to send unlink confirmation: %s", e)
+
+            self.unlink(delete_data=delete_data)
+            logger.info("Account unlinked via self-chat command. Process terminating...")
+            os._exit(0)
+            return
+
         matched_prefix = None
         recognized_prefixes = [self.prefix.lower(), "!get", "!send", "!fetch", "!doc", "!file", "!download"]
         for pfx in recognized_prefixes:
@@ -645,3 +682,60 @@ class WhatsAppBot:
 
         logger.info("Starting WhatsApp client connection...")
         self.client.connect()
+
+    def unlink(self, delete_data: bool = False) -> str:
+        """Unlink the WhatsApp account, remove session credentials, and optionally delete all saved messages/data."""
+        logger.info("Unlinking WhatsApp account (delete_data=%s)...", delete_data)
+
+        # 1. Server-side logout via neonize
+        try:
+            if hasattr(self, "client") and self.client.is_logged_in:
+                self.client.logout()
+        except Exception as e:
+            logger.warning("Error during client.logout(): %s", e)
+
+        try:
+            if hasattr(self, "client") and self.client.is_connected:
+                self.client.disconnect()
+        except Exception as e:
+            logger.warning("Error during client.disconnect(): %s", e)
+
+        # 2. Remove session sqlite database files
+        session_path = Path(self.session_db_path)
+        for p in [session_path, Path(f"{session_path}-shm"), Path(f"{session_path}-wal")]:
+            if p.exists():
+                try:
+                    p.unlink()
+                    logger.info("Deleted session file: %s", p)
+                except Exception as e:
+                    logger.warning("Could not delete %s: %s", p, e)
+
+        # 3. Optionally delete messages database and downloads
+        if delete_data:
+            msg_db_path = Path(Config.MESSAGES_DB_PATH)
+            for p in [msg_db_path, Path(f"{msg_db_path}-shm"), Path(f"{msg_db_path}-wal")]:
+                if p.exists():
+                    try:
+                        p.unlink()
+                        logger.info("Deleted messages database: %s", p)
+                    except Exception as e:
+                        logger.warning("Could not delete %s: %s", p, e)
+
+            downloads_dir = Path(Config.DOWNLOADS_DIR)
+            if downloads_dir.exists():
+                count = 0
+                for f in downloads_dir.glob("*"):
+                    if f.is_file():
+                        try:
+                            f.unlink()
+                            count += 1
+                        except Exception:
+                            pass
+                logger.info("Cleaned %d downloaded media files.", count)
+
+        msg = "Account successfully unlinked."
+        if delete_data:
+            msg += " All saved messages, contacts, and downloaded files have been deleted."
+        else:
+            msg += " Saved messages and contact history have been preserved."
+        return msg
