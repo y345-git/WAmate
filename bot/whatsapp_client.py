@@ -8,6 +8,7 @@ from pathlib import Path
 from neonize.client import NewClient
 from neonize.events import ConnectedEv, HistorySyncEv, MessageEv, LoggedOutEv
 from neonize.proto.waE2E.WAWebProtobufsE2E_pb2 import Message
+from neonize.proto.Neonize_pb2 import ChatPresence
 from neonize.utils import ClientName
 
 from .config import Config
@@ -365,25 +366,38 @@ class WhatsAppBot:
 
         logger.info("Processing self-chat query: '%s'", query)
 
-        # Generate answer using Gemini with access to the database
-        raw_answer = self.gemini.ask(query)
-        answer = format_for_whatsapp(raw_answer)
-
-        # Reply strictly in self-chat
+        # Show real-time typing indicator in WhatsApp self-chat
         try:
-            resp = client.reply_message(answer, message)
-            if resp and hasattr(resp, "ID"):
-                self.dedup.add(resp.ID)
-            logger.info("Sent reply to self-chat.")
-        except Exception as e:
-            logger.warning("reply_message failed (%s), sending directly to chat...", e)
+            client.send_chat_presence(chat_jid, ChatPresence.COMPOSING, ChatPresence.TEXT)
+        except Exception as pe:
+            logger.debug("Could not send typing presence indicator: %s", pe)
+
+        try:
+            # Generate answer using Gemini with access to the database
+            raw_answer = self.gemini.ask(query)
+            answer = format_for_whatsapp(raw_answer)
+
+            # Reply strictly in self-chat
             try:
-                resp = client.send_message(chat_jid, answer)
+                resp = client.reply_message(answer, message)
                 if resp and hasattr(resp, "ID"):
                     self.dedup.add(resp.ID)
-                logger.info("Sent direct message to self-chat.")
-            except Exception as e2:
-                logger.exception("Failed to send response to self-chat: %s", e2)
+                logger.info("Sent reply to self-chat.")
+            except Exception as e:
+                logger.warning("reply_message failed (%s), sending directly to chat...", e)
+                try:
+                    resp = client.send_message(chat_jid, answer)
+                    if resp and hasattr(resp, "ID"):
+                        self.dedup.add(resp.ID)
+                    logger.info("Sent direct message to self-chat.")
+                except Exception as e2:
+                    logger.exception("Failed to send response to self-chat: %s", e2)
+        finally:
+            # Clear typing indicator
+            try:
+                client.send_chat_presence(chat_jid, ChatPresence.PAUSED, ChatPresence.TEXT)
+            except Exception:
+                pass
 
     def sync_address_book_contacts(self) -> int:
         """Sync contacts from whatsmeow's session store (whatsmeow_contacts) into messages database.
@@ -578,12 +592,22 @@ class WhatsAppBot:
             )
 
             if is_scanned and mimetype == "application/pdf":
+                cached_ocr = self.db.get_ocr_cache(msg_id)
+                if cached_ocr:
+                    logger.info("Found cached OCR for document %s (skipping Vision API call)", real_filename or filename)
+                    return (
+                        f"--- Document Analysis & AI Vision OCR (Cached): {real_filename or filename} (Chat: '{chat_name}') ---\n"
+                        f"{cached_ocr}\n"
+                        f"--- End of Document OCR ---"
+                    )
+
                 logger.info("Running Gemini Vision OCR on document %s...", real_filename or filename)
                 try:
                     with open(file_path, "rb") as f:
                         file_bytes = f.read()
                     ocr_prompt = specific_question or f"Transcribe and analyze all details, tables, items, and figures in this document ({real_filename or filename}):"
                     ocr_text = self.gemini.ocr_file_content(file_bytes, mimetype=mimetype, prompt=ocr_prompt)
+                    self.db.save_ocr_cache(msg_id, ocr_text, mimetype=mimetype)
                     return (
                         f"--- Document Analysis & AI Vision OCR: {real_filename or filename} (Chat: '{chat_name}') ---\n"
                         f"{ocr_text}\n"
@@ -629,6 +653,24 @@ class WhatsAppBot:
             if not raw_info:
                 return f"No message found in the database with ID '{msg_id}'."
 
+            chat_name = raw_info.get("chat_name") or raw_info.get("chat_jid") or "Unknown"
+            sender_name = raw_info.get("sender_name") or "Unknown"
+            timestamp = _format_timestamp(raw_info.get("timestamp"))
+            caption = raw_info.get("text") or ""
+            filename = raw_info.get("filename") or msg_id
+
+            # Instant return if OCR was previously cached
+            cached_analysis = self.db.get_ocr_cache(msg_id)
+            if cached_analysis:
+                logger.info("Found cached OCR analysis for image %s (instant local lookup)", msg_id)
+                return (
+                    f"--- Image Analysis ({filename}) from chat '{chat_name}' ({timestamp}) [Cached] ---\n"
+                    f"Sender: {sender_name}\n"
+                    f"Caption: {caption if caption else 'None'}\n\n"
+                    f"{cached_analysis}\n"
+                    f"--- End of Image Analysis ---"
+                )
+
             file_path, real_filename, mimetype, err = self.download_media_by_id(msg_id)
             if err or not file_path:
                 return f"Found image {msg_id}, but could not download it from WhatsApp: {err}"
@@ -636,11 +678,6 @@ class WhatsAppBot:
             try:
                 with open(file_path, "rb") as f:
                     img_bytes = f.read()
-
-                chat_name = raw_info.get("chat_name") or raw_info.get("chat_jid") or "Unknown"
-                sender_name = raw_info.get("sender_name") or "Unknown"
-                timestamp = _format_timestamp(raw_info.get("timestamp"))
-                caption = raw_info.get("text") or ""
 
                 logger.info("Running Gemini Vision OCR on exact image %s from chat '%s'...", msg_id, chat_name)
                 ocr_prompt = (
@@ -650,6 +687,7 @@ class WhatsAppBot:
                 analysis = self.gemini.ocr_file_content(
                     img_bytes, mimetype=mimetype or "image/jpeg", prompt=ocr_prompt
                 )
+                self.db.save_ocr_cache(msg_id, analysis, mimetype=mimetype or "image/jpeg")
 
                 return (
                     f"--- Image Analysis ({real_filename or msg_id}) from chat '{chat_name}' ({timestamp}) ---\n"
@@ -705,6 +743,20 @@ class WhatsAppBot:
             caption = img.get("caption") or img.get("description") or ""
             timestamp = img.get("timestamp") or ""
 
+            # Check if this image was previously OCR'd
+            cached_analysis = self.db.get_ocr_cache(msg_id)
+            if cached_analysis:
+                logger.info("Using cached OCR analysis for image %s", msg_id)
+                inspections.append(
+                    f"--- Image Analysis ({msg_id}) from chat '{chat_name}' ({timestamp}) [Cached] ---\n"
+                    f"Caption: {caption if caption else 'None'}\n\n"
+                    f"{cached_analysis}\n"
+                    f"--- End of Image Analysis ---"
+                )
+                if len(inspections) >= 4:
+                    break
+                continue
+
             file_path, real_filename, mimetype, err = self.download_media_by_id(msg_id)
             if err or not file_path:
                 logger.warning("Could not download image %s: %s (trying next image)", msg_id, err)
@@ -722,6 +774,7 @@ class WhatsAppBot:
                 analysis = self.gemini.ocr_file_content(
                     img_bytes, mimetype=mimetype or "image/jpeg", prompt=ocr_prompt
                 )
+                self.db.save_ocr_cache(msg_id, analysis, mimetype=mimetype or "image/jpeg")
 
                 inspections.append(
                     f"--- Image Analysis ({real_filename or msg_id}) from chat '{chat_name}' ({timestamp}) ---\n"

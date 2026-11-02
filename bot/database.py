@@ -135,6 +135,19 @@ class DatabaseManager:
                 END;
                 """
             )
+
+            # 5. Media OCR Cache Table (persistent OCR results for images & scanned documents)
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS media_ocr_cache (
+                    msg_id TEXT PRIMARY KEY,
+                    ocr_text TEXT NOT NULL,
+                    mimetype TEXT,
+                    created_at INTEGER
+                );
+                """
+            )
+
             conn.commit()
             logger.info("Database initialized successfully at %s", self.db_path)
 
@@ -173,6 +186,61 @@ class DatabaseManager:
                     "updated_at": now,
                 },
             )
+            conn.commit()
+
+    def get_contact(self, jid: str) -> dict[str, Any] | None:
+        """Fetch contact metadata for a specific JID."""
+        if not jid:
+            return None
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT jid, name, push_name, phone_number, is_group, updated_at FROM contacts WHERE jid = ?",
+                (jid,),
+            ).fetchone()
+            if not row:
+                return None
+            return {
+                "jid": row["jid"],
+                "name": row["name"],
+                "push_name": row["push_name"],
+                "phone_number": row["phone_number"],
+                "is_group": bool(row["is_group"]),
+                "updated_at": row["updated_at"],
+            }
+
+    def get_ocr_cache(self, msg_id: str) -> str | None:
+        """Retrieve cached OCR analysis for a message if previously processed."""
+        if not msg_id:
+            return None
+        with self._get_connection() as conn:
+            row = conn.execute("SELECT ocr_text FROM media_ocr_cache WHERE msg_id = ?", (msg_id,)).fetchone()
+            return row["ocr_text"] if row else None
+
+    def save_ocr_cache(self, msg_id: str, ocr_text: str, mimetype: str = "") -> None:
+        """Save OCR analysis for a media message into cache and update messages text for FTS indexing."""
+        if not msg_id or not ocr_text:
+            return
+        now = int(datetime.now().timestamp())
+        with self._get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO media_ocr_cache (msg_id, ocr_text, mimetype, created_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(msg_id) DO UPDATE SET
+                    ocr_text = excluded.ocr_text,
+                    mimetype = excluded.mimetype,
+                    created_at = excluded.created_at
+                """,
+                (msg_id, ocr_text, mimetype, now),
+            )
+            # Append OCR text snippet to messages.text so SQLite FTS5 trigger (messages_au) indexes it
+            row = conn.execute("SELECT text FROM messages WHERE id = ?", (msg_id,)).fetchone()
+            if row:
+                current_text = row["text"] or ""
+                if "[OCR:" not in current_text:
+                    ocr_snippet = ocr_text.strip()
+                    updated_text = f"{current_text}\n[OCR: {ocr_snippet}]" if current_text else f"[OCR: {ocr_snippet}]"
+                    conn.execute("UPDATE messages SET text = ? WHERE id = ?", (updated_text, msg_id))
             conn.commit()
 
     def backfill_contact_names(self) -> None:
@@ -805,8 +873,10 @@ class DatabaseManager:
 
         if query:
             cleaned = f"%{query.strip().lower()}%"
-            conditions.append("(LOWER(text) LIKE ? OR LOWER(media_filename) LIKE ?)")
-            params.extend([cleaned, cleaned])
+            conditions.append(
+                "(LOWER(text) LIKE ? OR LOWER(media_filename) LIKE ? OR id IN (SELECT msg_id FROM media_ocr_cache WHERE LOWER(ocr_text) LIKE ?))"
+            )
+            params.extend([cleaned, cleaned, cleaned])
 
         where_clause = " AND ".join(conditions) if conditions else "1=1"
         sql = f"""
