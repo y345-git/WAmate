@@ -635,8 +635,173 @@ def _extract_pptx_text(path: Path, max_chars: int = 18000) -> str:
         return f"Failed to extract text from PowerPoint presentation: {e}"
 
 
+def _read_plain_text(path: Path, max_chars: int = 18000) -> str:
+    """Read a text file trying multiple common encodings."""
+    for enc in ["utf-8", "utf-8-sig", "latin-1", "cp1252", "utf-16"]:
+        try:
+            content = path.read_text(encoding=enc, errors="replace")
+            if content:
+                return content[:max_chars]
+        except Exception:
+            continue
+    try:
+        return path.read_text(encoding="utf-8", errors="ignore")[:max_chars]
+    except Exception as e:
+        return f"Failed to read text file: {e}"
+
+
+def _extract_vcf_text(path: Path, max_chars: int = 18000) -> str:
+    """Extract contact details from a vCard (.vcf) file."""
+    try:
+        raw = _read_plain_text(path, max_chars=max_chars)
+        cards = []
+        curr = {}
+        for line in raw.splitlines():
+            line = line.strip()
+            if line == "BEGIN:VCARD":
+                curr = {}
+            elif line == "END:VCARD":
+                if curr:
+                    card_str = f"👤 *Contact: {curr.get('FN') or curr.get('N') or 'Unnamed'}*\n"
+                    if "TEL" in curr:
+                        card_str += f"• Phone: {curr['TEL']}\n"
+                    if "EMAIL" in curr:
+                        card_str += f"• Email: {curr['EMAIL']}\n"
+                    if "ORG" in curr:
+                        card_str += f"• Organization: {curr['ORG']}\n"
+                    if "TITLE" in curr:
+                        card_str += f"• Title: {curr['TITLE']}\n"
+                    if "NOTE" in curr:
+                        card_str += f"• Note: {curr['NOTE']}\n"
+                    cards.append(card_str.strip())
+            elif ":" in line:
+                k, v = line.split(":", 1)
+                k_clean = k.split(";")[0].upper()
+                if k_clean in ("FN", "N", "TEL", "EMAIL", "ORG", "TITLE", "NOTE"):
+                    curr[k_clean] = v.strip()
+        if cards:
+            return "\n\n".join(cards)[:max_chars]
+        return raw[:max_chars]
+    except Exception as e:
+        return f"Failed to parse vCard file: {e}"
+
+
+def _extract_ics_text(path: Path, max_chars: int = 18000) -> str:
+    """Extract calendar meeting/event details from an iCalendar (.ics) file."""
+    try:
+        raw = _read_plain_text(path, max_chars=max_chars)
+        events = []
+        curr = {}
+        for line in raw.splitlines():
+            line = line.strip()
+            if line == "BEGIN:VEVENT":
+                curr = {}
+            elif line == "END:VEVENT":
+                if curr:
+                    ev_str = f"📅 *Event: {curr.get('SUMMARY', 'Untitled Event')}*\n"
+                    if "DTSTART" in curr:
+                        ev_str += f"• Starts: {curr['DTSTART']}\n"
+                    if "DTEND" in curr:
+                        ev_str += f"• Ends: {curr['DTEND']}\n"
+                    if "LOCATION" in curr:
+                        ev_str += f"• Location: {curr['LOCATION']}\n"
+                    if "DESCRIPTION" in curr:
+                        ev_str += f"• Description: {curr['DESCRIPTION']}\n"
+                    events.append(ev_str.strip())
+            elif ":" in line:
+                k, v = line.split(":", 1)
+                k_clean = k.split(";")[0].upper()
+                if k_clean in ("SUMMARY", "DTSTART", "DTEND", "LOCATION", "DESCRIPTION"):
+                    curr[k_clean] = v.strip()
+        if events:
+            return "\n\n".join(events)[:max_chars]
+        return raw[:max_chars]
+    except Exception as e:
+        return f"Failed to parse calendar invite file: {e}"
+
+
+def _extract_ipynb_text(path: Path, max_chars: int = 18000) -> str:
+    """Extract code and markdown cells from a Jupyter Notebook (.ipynb)."""
+    try:
+        raw = _read_plain_text(path, max_chars=max_chars * 2)
+        data = json.loads(raw)
+        cells_out = []
+        for idx, cell in enumerate(data.get("cells", []), 1):
+            ctype = cell.get("cell_type", "code")
+            src = "".join(cell.get("source", [])).strip()
+            if src:
+                cells_out.append(f"[{ctype.upper()} Cell {idx}]:\n{src}")
+        if cells_out:
+            return f"=== Jupyter Notebook: {path.name} ({len(cells_out)} cells) ===\n\n" + "\n\n".join(cells_out)[:max_chars]
+        return "The Jupyter Notebook contains no cells or text."
+    except Exception as e:
+        return f"Failed to parse Jupyter Notebook: {e}"
+
+
+def _extract_opendocument_text(path: Path, max_chars: int = 18000) -> str:
+    """Extract text from OpenDocument formats (.odt, .ods, .odp)."""
+    try:
+        with zipfile.ZipFile(str(path)) as z:
+            if "content.xml" in z.namelist():
+                tree = ET.fromstring(z.read("content.xml"))
+                texts = [node.text for node in tree.iter() if node.text and node.text.strip()]
+                if texts:
+                    return f"=== OpenDocument: {path.name} ===\n" + "\n".join(texts)[:max_chars]
+        return "OpenDocument file appears empty."
+    except Exception as e:
+        return f"Failed to parse OpenDocument file: {e}"
+
+
+def _extract_rtf_text(path: Path, max_chars: int = 18000) -> str:
+    """Extract plain text from a Rich Text Format (.rtf) file."""
+    try:
+        raw = _read_plain_text(path, max_chars=max_chars * 2)
+        clean = re.sub(r"\\[a-zA-Z0-9-]+\s?", " ", raw)
+        clean = re.sub(r"[{}]", "", clean)
+        clean = " ".join(clean.split())
+        return clean[:max_chars] if clean else "The RTF document is empty."
+    except Exception as e:
+        return f"Failed to extract RTF text: {e}"
+
+
+def _extract_zip_contents(path: Path, max_chars: int = 18000) -> str:
+    """List contents of a ZIP archive and preview readable text/code files inside."""
+    try:
+        with zipfile.ZipFile(str(path)) as z:
+            infolist = z.infolist()
+            total_files = len(infolist)
+            total_size_kb = sum(info.file_size for info in infolist) / 1024
+            lines = [f"=== Archive: '{path.name}' ({total_files} files, {total_size_kb:.1f} KB uncompressed) ==="]
+
+            preview_candidates = []
+            for idx, info in enumerate(infolist):
+                if idx < 30:
+                    lines.append(f"• {info.filename} ({info.file_size / 1024:.1f} KB)")
+                sfx = Path(info.filename).suffix.lower()
+                if sfx in [".txt", ".md", ".py", ".json", ".csv", ".html", ".c", ".cpp", ".java", ".sql", ".js", ".ts"] and 0 < info.file_size < 50000:
+                    preview_candidates.append(info.filename)
+
+            if total_files > 30:
+                lines.append(f"... and {total_files - 30} additional files.")
+
+            for pfile in preview_candidates[:3]:
+                try:
+                    pcontent = z.read(pfile).decode("utf-8", errors="replace")[:2000]
+                    if pcontent.strip():
+                        lines.append(f"\n--- Preview: {pfile} ---\n{pcontent.strip()}\n--- End Preview ---")
+                except Exception:
+                    pass
+
+            return "\n".join(lines)[:max_chars]
+    except Exception as e:
+        return f"Failed to inspect ZIP archive: {e}"
+
+
 def extract_document_text(file_path: str, max_chars: int = 18000) -> str:
-    """Extract readable structured text from PDFs, Excel spreadsheets, Word documents, PowerPoint presentations, or text files."""
+    """Extract readable structured text from any day-to-day WhatsApp file:
+    PDFs, Excel spreadsheets, Word docs, PowerPoint presentations, Jupyter notebooks,
+    vCards, Calendar invites, ZIP archives, plain text, logs, markdown, and source code.
+    """
     path = Path(file_path)
     if not path.exists():
         return f"File '{file_path}' does not exist on disk."
@@ -674,15 +839,49 @@ def extract_document_text(file_path: str, max_chars: int = 18000) -> str:
     elif suffix in [".pptx", ".ppt"]:
         return _extract_pptx_text(path, max_chars=max_chars)
 
-    # 5. Plain Text, CSV, JSON, Markdown, Code
-    elif suffix in [".txt", ".csv", ".tsv", ".json", ".xml", ".html", ".py", ".md", ".log", ".yaml", ".yml", ".c", ".cpp", ".java", ".sql"]:
-        try:
-            return path.read_text(encoding="utf-8", errors="ignore")[:max_chars]
-        except Exception as e:
-            return f"Failed to read text file: {e}"
+    # 5. OpenDocument Formats (.odt, .ods, .odp)
+    elif suffix in [".odt", ".ods", ".odp"]:
+        return _extract_opendocument_text(path, max_chars=max_chars)
 
-    else:
-        return f"Document '{path.name}' is in binary format ({suffix}). File size: {path.stat().st_size} bytes."
+    # 6. Rich Text Format (.rtf)
+    elif suffix == ".rtf":
+        return _extract_rtf_text(path, max_chars=max_chars)
+
+    # 7. Jupyter Notebooks (.ipynb)
+    elif suffix == ".ipynb":
+        return _extract_ipynb_text(path, max_chars=max_chars)
+
+    # 8. vCard Contact Cards (.vcf)
+    elif suffix == ".vcf":
+        return _extract_vcf_text(path, max_chars=max_chars)
+
+    # 9. Calendar Invites (.ics)
+    elif suffix == ".ics":
+        return _extract_ics_text(path, max_chars=max_chars)
+
+    # 10. ZIP Archives (.zip)
+    elif suffix == ".zip":
+        return _extract_zip_contents(path, max_chars=max_chars)
+
+    # 11. Plain Text, Notes, Logs, Markdown, Configs, E-books & Source Code
+    elif suffix in [
+        ".txt", ".log", ".md", ".markdown", ".csv", ".tsv", ".json", ".xml", ".yaml", ".yml",
+        ".html", ".htm", ".tex", ".ini", ".cfg", ".conf", ".env", ".sql", ".py", ".js", ".jsx",
+        ".ts", ".tsx", ".css", ".scss", ".c", ".cpp", ".h", ".hpp", ".java", ".kt", ".cs",
+        ".php", ".rb", ".go", ".rs", ".swift", ".sh", ".bash", ".bat", ".ps1", ".cmd", ".epub"
+    ]:
+        return _read_plain_text(path, max_chars=max_chars)
+
+    # 12. Fallback: try reading as plain text with multi-encoding detection before giving up
+    try:
+        content = _read_plain_text(path, max_chars=max_chars)
+        # If the file appears to be mostly readable text (few null bytes)
+        if content and "\x00" not in content[:500]:
+            return content
+    except Exception:
+        pass
+
+    return f"Document '{path.name}' is in binary format ({suffix}). File size: {path.stat().st_size} bytes."
 
 
 def format_for_whatsapp(text: str) -> str:

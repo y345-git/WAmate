@@ -44,7 +44,7 @@ WAmate: 📊 WAmate Second Brain Status
 
 * 🔒 **100% Self-Chat Isolation:** Listens **only** in your personal "Message yourself" ("You") chat. Never monitors, snoops on, or sends messages to external contacts or group chats.
 * ⚡ **Ultra-Fast Batch Indexing (1,000+ msgs/sec):** High-performance SQLite batch engine syncs tens of thousands of past messages in seconds with a live console progress counter.
-* 📄 **Multi-Format Document Analysis & Delivery (`!get` / `!send`):** Automatically extracts and analyzes contents inside Excel spreadsheets (`.xlsx`), Word documents (`.docx`), PowerPoint slide decks (`.pptx`), CSVs, and PDFs. Gemini can calculate totals, summarize slide decks, inspect tables, and deliver the actual files directly into your chat.
+* 📄 **Universal File & Document Analysis (`!get` / `!send`):** Automatically extracts and analyzes contents inside all day-to-day shared WhatsApp files: plain text (`.txt`), logs (`.log`), notes (`.md`), Excel (`.xlsx`, `.xls`, `.csv`), Word (`.docx`, `.rtf`, `.odt`), PowerPoint (`.pptx`, `.ppt`), vCard contacts (`.vcf`), calendar events (`.ics`), Jupyter notebooks (`.ipynb`), ZIP archives (`.zip`), source code (`.py`, `.js`, etc.), and PDFs. Gemini can calculate totals, summarize slide decks, inspect tables, and deliver the actual files directly into your chat.
 * 👁️ **Multimodal AI Vision & Idle OCR Pre-Caching:** Powered by Google Gemini to analyze scanned receipts, handwritten notes, whiteboards, bills, and visual items (clothing colors, objects, payment screenshots). Includes a smart **Idle OCR Background Worker** that automatically pre-indexes recent photos with rate throttling, caching results permanently in SQLite for **0ms queries with zero API costs**.
 * 🔗 **Link Preview & Web Metadata Search:** Automatically indexes webpage titles, descriptions, and metadata from shared URLs (GitHub repositories, YouTube videos, Amazon/e-commerce products, technical blogs, news articles), making shared links instantly searchable by topic or keyword.
 * 🆔 **Cryptographic WhatsApp LID Resolution:** Automatically cross-references WhatsApp's 15-digit privacy LIDs (`@lid`) against your phone address book, accurately identifying real contact names in group chats.
@@ -232,11 +232,13 @@ Once WAmate completes its initial sync, try these queries in your self-chat:
   * `!ask what was the model of the keyboard Alex shared?`
   * `!ask what is the total amount in the payment receipt screenshot sent by Sarah?`
   * `!ask read the handwritten whiteboard photo sent in Project Alpha group`
-* **Documents, Spreadsheets & Presentations:**
+* **Documents, Spreadsheets, Notes & Files:**
   * `!get client onboarding checklist pdf`
+  * `!ask what are the meeting action items in notes.txt?`
   * `!ask what is the grand total in the Q3 revenue spreadsheet?`
   * `!ask summarize the key points from slide 3 of the roadmap presentation`
-  * `!ask what are the action items in the project proposal word document?`
+  * `!ask what files are inside project_archive.zip?`
+  * `!ask what is the contact number in speaker_card.vcf?`
   * `!send the latest vendor agreement from Acme Corp`
 * **Products & Shared Links:**
   * `!ask what all monitor and desk setup links did David share today?`
