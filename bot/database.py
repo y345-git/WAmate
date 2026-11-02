@@ -1041,3 +1041,35 @@ class DatabaseManager:
                     }
                 )
             return results
+
+    def get_stats(self) -> dict[str, Any]:
+        """Return comprehensive counts and date ranges of the indexed message database."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            total_msgs = cursor.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
+            total_contacts = cursor.execute("SELECT COUNT(*) FROM contacts").fetchone()[0]
+            total_groups = cursor.execute("SELECT COUNT(*) FROM contacts WHERE is_group = 1").fetchone()[0]
+            total_ocr = 0
+            try:
+                total_ocr = cursor.execute("SELECT COUNT(*) FROM media_ocr_cache").fetchone()[0]
+            except Exception:
+                pass
+
+            oldest_ts = cursor.execute("SELECT MIN(timestamp) FROM messages WHERE timestamp > 0").fetchone()[0]
+            newest_ts = cursor.execute("SELECT MAX(timestamp) FROM messages WHERE timestamp > 0").fetchone()[0]
+
+            db_p = Path(self.db_path)
+            db_size_bytes = db_p.stat().st_size if db_p.exists() else 0
+            db_size_mb = round(db_size_bytes / (1024 * 1024), 2)
+
+            return {
+                "total_messages": total_msgs,
+                "total_contacts": total_contacts,
+                "total_groups": total_groups,
+                "total_ocr_cached": total_ocr,
+                "oldest_timestamp": oldest_ts,
+                "newest_timestamp": newest_ts,
+                "oldest_date": _format_timestamp(oldest_ts) if oldest_ts else "N/A",
+                "newest_date": _format_timestamp(newest_ts) if newest_ts else "N/A",
+                "db_size_mb": db_size_mb,
+            }

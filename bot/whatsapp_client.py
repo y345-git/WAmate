@@ -50,6 +50,7 @@ class WhatsAppBot:
         self.my_user_number = ""
         self.my_canonical_jid = ""
         self.last_self_chat_jid = None
+        self.history_sync_completed = False
 
         # Link Gemini agent back to this bot client for document sending & extraction tools
         self.gemini.bot_client = self
@@ -122,12 +123,17 @@ class WhatsAppBot:
             try:
                 data = event.Data
                 sync_type_name = data.HistorySyncType.Name(data.syncType) if hasattr(data, "syncType") else "UNKNOWN"
+                chunk_order = getattr(data, "chunkOrder", 0)
+                progress = getattr(data, "progress", 0)
                 # Calculate total messages in this sync batch
                 total_msgs_in_batch = sum(len(conv.messages) for conv in data.conversations)
                 num_chats = len(data.conversations)
+
+                prog_str = f" [Progress: {progress}%]" if progress > 0 else ""
+                chunk_str = f"chunk #{chunk_order} " if chunk_order > 0 else ""
                 logger.info(
-                    "Processing HistorySync batch (type: %s) — %d messages across %d chats...",
-                    sync_type_name, total_msgs_in_batch, num_chats
+                    "Processing HistorySync %s(type: %s%s) — %d messages across %d chats...",
+                    chunk_str, sync_type_name, prog_str, total_msgs_in_batch, num_chats
                 )
 
                 # Batch sync pushnames to contacts table
@@ -241,6 +247,15 @@ class WhatsAppBot:
                     "HistorySync: successfully indexed %d / %d historical messages in %.2fs (%.0f msgs/sec).",
                     total_synced_msgs, total_msgs_in_batch, total_elapsed, total_rate
                 )
+
+                if progress >= 100:
+                    self.history_sync_completed = True
+                    stats = self.db.get_stats()
+                    logger.info(
+                        "🎉 HistorySync 100%% complete! All historical messages indexed (%d total in database across %d contacts).",
+                        stats["total_messages"], stats["total_contacts"]
+                    )
+
                 # Keep phone address book contacts updated
                 self.sync_address_book_contacts()
             except Exception as e:
@@ -366,6 +381,35 @@ class WhatsAppBot:
             self.unlink(delete_data=delete_data)
             logger.info("Account unlinked via self-chat command. Process terminating...")
             os._exit(0)
+            return
+
+        # Check for !status / !stats / !info commands in self-chat
+        status_triggers = ["!status", "!stats", "!info"]
+        if any(text_lower == st or text_lower.startswith(f"{st} ") for st in status_triggers):
+            if self.dedup.contains(msg_id):
+                return
+            self.dedup.add(msg_id)
+
+            stats = self.db.get_stats()
+            sync_state = "Fully indexed & Real-time active ✅" if getattr(self, "history_sync_completed", False) else "Indexed (Real-time active) ✅"
+            reply = (
+                "📊 *WAmate Second Brain Status*\n\n"
+                f"• *Messages Synced:* {stats['total_messages']:,}\n"
+                f"• *Contacts & Groups:* {stats['total_contacts']:,} ({stats['total_groups']} groups)\n"
+                f"• *History Date Range:* {stats['oldest_date']} → {stats['newest_date']}\n"
+                f"• *OCR Cached Media:* {stats['total_ocr_cached']}\n"
+                f"• *Database Size:* {stats['db_size_mb']} MB\n"
+                f"• *Sync Status:* {sync_state}\n"
+                f"• *AI Model:* `{Config.GEMINI_MODEL}`\n\n"
+                "_Send `!ask <question>` to search or query your messages!_"
+            )
+            try:
+                client.reply_message(reply, message)
+            except Exception:
+                try:
+                    client.send_message(chat_jid, reply)
+                except Exception as e:
+                    logger.warning("Failed to send status reply: %s", e)
             return
 
         matched_prefix = None

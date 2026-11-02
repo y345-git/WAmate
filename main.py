@@ -137,7 +137,26 @@ def main():
         action="store_true",
         help="Skip confirmation prompt and proceed immediately",
     )
+    parser.add_argument(
+        "--status",
+        action="store_true",
+        help="Print database and indexing stats then exit",
+    )
     args = parser.parse_args()
+
+    if args.status:
+        db = DatabaseManager(Config.MESSAGES_DB_PATH)
+        stats = db.get_stats()
+        print("\n" + "=" * 60)
+        print("   WAmate - Database & Indexing Status")
+        print("=" * 60)
+        print(f" • Messages Synced:      {stats['total_messages']:,}")
+        print(f" • Contacts & Groups:    {stats['total_contacts']:,} ({stats['total_groups']} groups)")
+        print(f" • History Date Range:   {stats['oldest_date']} -> {stats['newest_date']}")
+        print(f" • OCR Media Cache:      {stats['total_ocr_cached']}")
+        print(f" • Database File Size:   {stats['db_size_mb']} MB")
+        print("=" * 60 + "\n")
+        sys.exit(0)
 
     if args.reset:
         args.unlink = True
