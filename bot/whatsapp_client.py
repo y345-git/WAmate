@@ -122,14 +122,34 @@ class WhatsAppBot:
             try:
                 data = event.Data
                 sync_type_name = data.HistorySyncType.Name(data.syncType) if hasattr(data, "syncType") else "UNKNOWN"
-                logger.info("Processing HistorySync batch (type: %s)...", sync_type_name)
+                # Calculate total messages in this sync batch
+                total_msgs_in_batch = sum(len(conv.messages) for conv in data.conversations)
+                num_chats = len(data.conversations)
+                logger.info(
+                    "Processing HistorySync batch (type: %s) — %d messages across %d chats...",
+                    sync_type_name, total_msgs_in_batch, num_chats
+                )
 
-                # Sync pushnames to contacts table
-                for pn in data.pushnames:
-                    if pn.ID and pn.pushname:
-                        self.db.upsert_contact(jid=pn.ID, push_name=pn.pushname)
+                # Batch sync pushnames to contacts table
+                pushnames_to_sync = [{"jid": pn.ID, "push_name": pn.pushname} for pn in data.pushnames if pn.ID and pn.pushname]
+                if pushnames_to_sync:
+                    self.db.upsert_contacts_batch(pushnames_to_sync)
 
-                # Sync conversations and messages
+                # Batch sync chat headers to contacts table
+                chats_to_sync = [
+                    {"jid": conv.ID, "name": conv.name or conv.displayName or "", "is_group": conv.ID.endswith("@g.us")}
+                    for conv in data.conversations if conv.ID
+                ]
+                if chats_to_sync:
+                    self.db.upsert_contacts_batch(chats_to_sync)
+
+                # Local in-memory contact cache for fast name lookups during this batch
+                contact_name_cache: dict[str, str] = {}
+
+                # Sync messages with live counter in batches of 500
+                start_time = time.time()
+                pending_messages = []
+                processed_count = 0
                 total_synced_msgs = 0
                 for conv in data.conversations:
                     chat_jid = conv.ID
@@ -138,8 +158,6 @@ class WhatsAppBot:
 
                     chat_name = conv.name or conv.displayName or ""
                     is_group = chat_jid.endswith("@g.us")
-
-                    self.db.upsert_contact(jid=chat_jid, name=chat_name, is_group=is_group)
 
                     for msg_wrapper in conv.messages:
                         wmsg = msg_wrapper.message
@@ -158,12 +176,16 @@ class WhatsAppBot:
                             if not sender_jid:
                                 sender_jid = chat_jid
 
-                            # Determine sender name:
+                            # Determine sender name with cache
                             sender_name = (getattr(wmsg, "pushName", "") or "").strip()
                             if not sender_name and sender_jid and sender_jid != chat_jid:
-                                c_info = self.db.get_contact(sender_jid)
-                                if c_info:
-                                    sender_name = c_info.get("name") or c_info.get("push_name") or ""
+                                if sender_jid in contact_name_cache:
+                                    sender_name = contact_name_cache[sender_jid]
+                                else:
+                                    c_info = self.db.get_contact(sender_jid)
+                                    if c_info:
+                                        sender_name = c_info.get("name") or c_info.get("push_name") or ""
+                                    contact_name_cache[sender_jid] = sender_name
                             if not sender_name:
                                 sender_name = sender_jid.split("@")[0] if ("@" in sender_jid and not sender_jid.endswith("@g.us")) else "Participant"
                         else:
@@ -174,27 +196,51 @@ class WhatsAppBot:
                         timestamp = normalize_timestamp(wmsg.messageTimestamp)
                         raw_bytes = wmsg.message.SerializeToString() if hasattr(wmsg.message, "SerializeToString") else None
 
-                        inserted = self.db.insert_message(
-                            msg_id=msg_id,
-                            chat_jid=chat_jid,
-                            chat_name=chat_name,
-                            sender_jid=sender_jid,
-                            sender_name=sender_name,
-                            text=rich_info.text,
-                            timestamp=timestamp,
-                            is_from_me=is_from_me,
-                            is_group=is_group,
-                            media_type=rich_info.media_type,
-                            media_filename=rich_info.media_filename,
-                            media_mimetype=rich_info.media_mimetype,
-                            media_size=rich_info.media_size,
-                            media_metadata=rich_info.media_metadata,
-                            raw_message=raw_bytes,
-                        )
-                        if inserted:
-                            total_synced_msgs += 1
+                        pending_messages.append({
+                            "msg_id": msg_id,
+                            "chat_jid": chat_jid,
+                            "chat_name": chat_name,
+                            "sender_jid": sender_jid,
+                            "sender_name": sender_name,
+                            "text": rich_info.text,
+                            "timestamp": timestamp,
+                            "is_from_me": is_from_me,
+                            "is_group": is_group,
+                            "media_type": rich_info.media_type,
+                            "media_filename": rich_info.media_filename,
+                            "media_mimetype": rich_info.media_mimetype,
+                            "media_size": rich_info.media_size,
+                            "media_metadata": rich_info.media_metadata,
+                            "raw_message": raw_bytes,
+                        })
+                        processed_count += 1
 
-                logger.info("HistorySync: successfully indexed %d historical messages.", total_synced_msgs)
+                        # Flush batch of 500 messages & log live progress counter
+                        if len(pending_messages) >= 500:
+                            self.db.insert_messages_batch(pending_messages)
+                            total_synced_msgs += len(pending_messages)
+                            pending_messages.clear()
+
+                            elapsed = time.time() - start_time
+                            rate = processed_count / elapsed if elapsed > 0 else 0
+                            pct = (processed_count / total_msgs_in_batch * 100) if total_msgs_in_batch > 0 else 100
+                            logger.info(
+                                "[HistorySync Counter] %d / %d messages (%.1f%%) — %.0f msgs/sec",
+                                processed_count, total_msgs_in_batch, pct, rate
+                            )
+
+                # Flush any remaining messages in the batch
+                if pending_messages:
+                    self.db.insert_messages_batch(pending_messages)
+                    total_synced_msgs += len(pending_messages)
+                    pending_messages.clear()
+
+                total_elapsed = time.time() - start_time
+                total_rate = total_synced_msgs / total_elapsed if total_elapsed > 0 else 0
+                logger.info(
+                    "HistorySync: successfully indexed %d / %d historical messages in %.2fs (%.0f msgs/sec).",
+                    total_synced_msgs, total_msgs_in_batch, total_elapsed, total_rate
+                )
                 # Keep phone address book contacts updated
                 self.sync_address_book_contacts()
             except Exception as e:

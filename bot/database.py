@@ -188,6 +188,39 @@ class DatabaseManager:
             )
             conn.commit()
 
+    def upsert_contacts_batch(self, contacts: list[dict[str, Any]]) -> None:
+        """Batch insert or update contacts in a single transaction."""
+        if not contacts:
+            return
+        now = int(datetime.now().timestamp())
+        query = """
+        INSERT INTO contacts (jid, name, push_name, phone_number, is_group, updated_at)
+        VALUES (:jid, :name, :push_name, :phone_number, :is_group, :updated_at)
+        ON CONFLICT(jid) DO UPDATE SET
+            name = COALESCE(:name, contacts.name),
+            push_name = COALESCE(:push_name, contacts.push_name),
+            phone_number = COALESCE(:phone_number, contacts.phone_number),
+            is_group = :is_group,
+            updated_at = :updated_at
+        """
+        rows = []
+        for c in contacts:
+            jid = c.get("jid")
+            if not jid:
+                continue
+            rows.append({
+                "jid": jid,
+                "name": c.get("name") if c.get("name") else None,
+                "push_name": c.get("push_name") if c.get("push_name") else None,
+                "phone_number": c.get("phone_number") if c.get("phone_number") else None,
+                "is_group": 1 if c.get("is_group") else 0,
+                "updated_at": now,
+            })
+        if rows:
+            with self._get_connection() as conn:
+                conn.executemany(query, rows)
+                conn.commit()
+
     def get_contact(self, jid: str) -> dict[str, Any] | None:
         """Fetch contact metadata for a specific JID."""
         if not jid:
@@ -344,6 +377,70 @@ class DatabaseManager:
             )
             conn.commit()
             return cursor.rowcount > 0
+
+    def insert_messages_batch(self, messages_data: list[dict[str, Any]]) -> int:
+        """Batch insert messages in a single transaction for high-performance syncing."""
+        if not messages_data:
+            return 0
+
+        query = """
+        INSERT INTO messages
+        (id, chat_jid, chat_name, sender_jid, sender_name, text, timestamp, is_from_me, is_group,
+         media_type, media_filename, media_mimetype, media_size, media_metadata, raw_message)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            chat_name = COALESCE(excluded.chat_name, messages.chat_name),
+            sender_name = COALESCE(excluded.sender_name, messages.sender_name),
+            text = CASE WHEN excluded.text != '' THEN excluded.text ELSE messages.text END,
+            media_type = CASE WHEN excluded.media_type != 'text' THEN excluded.media_type ELSE messages.media_type END,
+            media_filename = CASE WHEN excluded.media_filename != '' THEN excluded.media_filename ELSE messages.media_filename END,
+            media_mimetype = CASE WHEN excluded.media_mimetype != '' THEN excluded.media_mimetype ELSE messages.media_mimetype END,
+            media_size = CASE WHEN excluded.media_size > 0 THEN excluded.media_size ELSE messages.media_size END,
+            media_metadata = CASE WHEN excluded.media_metadata != '{}' THEN excluded.media_metadata ELSE messages.media_metadata END,
+            raw_message = COALESCE(excluded.raw_message, messages.raw_message)
+        """
+
+        rows = []
+        for m in messages_data:
+            msg_id = m.get("msg_id")
+            chat_jid = m.get("chat_jid")
+            if not msg_id or not chat_jid:
+                continue
+
+            ts = m.get("timestamp", 0)
+            if ts > 10_000_000_000:
+                ts = ts // 1000
+
+            meta = m.get("media_metadata")
+            metadata_str = json.dumps(meta) if isinstance(meta, dict) else str(meta or "{}")
+
+            rows.append(
+                (
+                    msg_id,
+                    chat_jid,
+                    m.get("chat_name"),
+                    m.get("sender_jid", chat_jid),
+                    m.get("sender_name"),
+                    m.get("text", ""),
+                    ts,
+                    1 if m.get("is_from_me") else 0,
+                    1 if m.get("is_group") else 0,
+                    m.get("media_type", "text"),
+                    m.get("media_filename") or "",
+                    m.get("media_mimetype") or "",
+                    m.get("media_size") or 0,
+                    metadata_str,
+                    m.get("raw_message"),
+                )
+            )
+
+        if not rows:
+            return 0
+
+        with self._get_connection() as conn:
+            cursor = conn.executemany(query, rows)
+            conn.commit()
+            return cursor.rowcount
 
     def get_message_raw(self, msg_id: str) -> dict[str, Any] | None:
         """Fetch raw message blob and metadata for downloading media content."""
