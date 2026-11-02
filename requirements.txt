@@ -1,0 +1,13 @@
+# WhatsApp Multi-Device Protocol via whatsmeow Go engine
+neonize==0.5.2
+protobuf>=7.34.0
+
+# Google Gemini Official Python SDK
+google-genai>=1.0.0
+
+# Environment variables & utilities
+python-dotenv>=1.0.1
+pydantic>=2.0.0
+segno>=1.6.0
+python-magic>=0.4.27
+pypdf>=4.0.0

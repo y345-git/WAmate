@@ -1,0 +1,22 @@
+services:
+  wamate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: wamate
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      # Persistent storage for session credentials, messages database, and media
+      - ./data:/app/data
+    stdin_open: true
+    tty: true
+    environment:
+      - TZ=${TZ:-Asia/Kolkata}
+      - PYTHONUNBUFFERED=1
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
