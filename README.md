@@ -1,35 +1,94 @@
 # 🤖 WAmate - WhatsApp Self-Chat AI Second Brain
 
-[![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
-[![Google Gemini](https://img.shields.io/badge/AI-Google%20Gemini-orange.svg)](https://aistudio.google.com/)
-[![Neonize](https://img.shields.io/badge/WhatsApp-Neonize%200.5.2-green.svg)](https://github.com/krypton-byte/neonize)
-[![Docker Ready](https://img.shields.io/badge/Docker-Ready-2496ED.svg)](https://www.docker.com/)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3.12-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.12" />
+  <img src="https://img.shields.io/badge/Google%20Gemini-Flash%20Lite-E37400?style=for-the-badge&logo=google&logoColor=white" alt="Gemini AI" />
+  <img src="https://img.shields.io/badge/WhatsApp-Neonize%200.5.2-25D366?style=for-the-badge&logo=whatsapp&logoColor=white" alt="WhatsApp Neonize" />
+  <img src="https://img.shields.io/badge/SQLite-FTS5%20Search-003B57?style=for-the-badge&logo=sqlite&logoColor=white" alt="SQLite FTS5" />
+  <img src="https://img.shields.io/badge/Docker-Ready-2496ED?style=for-the-badge&logo=docker&logoColor=white" alt="Docker Ready" />
+  <img src="https://img.shields.io/badge/License-MIT-green?style=for-the-badge" alt="MIT License" />
+</p>
 
-**WAmate** transforms your WhatsApp **"Message yourself" (You / Self-Chat)** into an ultra-fast, multimodal AI second brain. 
+**WAmate** transforms your personal WhatsApp **"Message yourself" (You / Self-Chat)** into a blazing-fast, multimodal AI second brain. 
 
-Using Google Gemini and local SQLite FTS5 (Full-Text Search), WAmate remembers and organizes your entire WhatsApp history—messages, voice notes, contact cards, polls, photos, and scanned PDFs—and answers questions or sends files right inside your private self-chat.
+Operating **strictly inside your private self-chat**, WAmate captures, indexes, and organizes your entire WhatsApp ecosystem—messages, voice notes, photos, product links, contact cards, polls, and scanned PDFs—and lets you query everything or fetch actual files directly through WhatsApp.
+
+---
+
+### 💬 See It In Action
 
 ```text
 You: !ask what was the color of kurta that jay shared me yesterday
-WAmate: In your direct chat with Jay Patil yesterday, Jay shared 5 photos of kurtas while you discussed colors and embroidery. In these photos, the kurta features an olive-green base with intricate embroidery...
+WAmate: ⏳ [reacts immediately]
+WAmate: In your direct chat with Jay Patil yesterday, Jay shared photos of kurtas while discussing designs. The kurta features an olive-green base with intricate white floral embroidery on the collar and cuffs...
+WAmate: ✅
 
-You: !ask send me the latest tax invoice from education group
-WAmate: [Sends actual PDF file directly to your chat]
-📄 Tax_Invoice_262710021_DCF_Sangli.pdf
+You: !get 360 A Jay enterprises
+WAmate: ⏳
+WAmate: [Delivers the actual PDF file directly to your chat]
+📄 360 A Jay enterprises.pdf (160 KB)
+WAmate: ✅
+
+You: !status
+WAmate: 📊 WAmate Second Brain Status
+• Messages Synced: 44,818
+• Contacts & Groups: 8,641 (158 groups)
+• History Date Range: 2024-09-13 → 2026-11-02
+• Database Size: 83.7 MB
+• Sync Status: Fully indexed & Real-time active ✅
 ```
 
 ---
 
 ## 🌟 Key Features
 
-* 🔒 **100% Self-Chat Exclusivity:** Listens **only** in your personal "Message yourself" ("You") chat for `!ask`. Never interferes with, snoops on, or replies to external contacts or group chats.
-* ⚡ **Lightning Fast Hybrid Search:** Combines SQLite FTS5 full-text indexing, multi-word contact resolution, and smart chat history lookups across 4,000+ contacts and groups.
-* 📄 **Actual Document Delivery:** When you ask for an invoice, syllabus, or report, WAmate locates the file on WhatsApp CDN and sends the real document (`.pdf`, `.docx`, etc.) directly into your chat.
-* 👁️ **Multimodal AI Vision & OCR:** Uses Gemini Vision to read scanned PDFs, receipts, whiteboard photos, bills, handwritten notes, and clothing items.
-* 🎙️ **Rich Media Aware:** Indexes voice note durations, images, videos, shared vCard contact cards, and polls with their voting options.
-* 📱 **Native WhatsApp Markdown:** Output is automatically sanitized for mobile screens using native WhatsApp formatting (`*bold*`, `_italics_`, `• bullets`) without ugly raw `#` headers, double asterisks, or broken tables.
-* 🔑 **Dual Pairing Options:** Scan a terminal QR code or enter an 8-character phone pairing code (`ABCD-1234`) for headless cloud servers and VPSs.
+* 🔒 **100% Self-Chat Isolation:** Listens **only** in your personal "Message yourself" ("You") chat. Never monitors, snoops on, or sends messages to external contacts or group chats.
+* ⚡ **Ultra-Fast Batch Indexing (1,000+ msgs/sec):** High-performance SQLite batch engine syncs tens of thousands of past messages in seconds with a live console progress counter.
+* 📄 **Actual Document Delivery (`!get` / `!send`):** Automatically finds files on WhatsApp's network and delivers the real document (`.pdf`, `.docx`, `.xlsx`, etc.) straight into your chat.
+* 👁️ **Multimodal AI Vision & Persistent OCR:** Powered by Google Gemini to analyze scanned receipts, handwritten notes, whiteboards, bills, and visual items (clothing colors, objects, payment screenshots). OCR results are cached permanently in SQLite for **0ms repeat queries with zero API costs**.
+* 🔗 **Link Preview & Product Card Search:** Automatically indexes webpage titles, descriptions, and brand metadata from shared links (Myntra, Amazon, H&M, Wrogn, Wildcraft, news articles), making shared products instantly searchable by keywords.
+* 🆔 **Cryptographic WhatsApp LID Resolution:** Automatically cross-references WhatsApp's 15-digit privacy LIDs (`@lid`) against your phone address book, accurately identifying real contact names in group chats.
+* ⏳ **Real-Time Visual Feedback:** Reacts immediately with an hourglass **`⏳`** on your message bubble when a query begins, switching to a checkmark **`✅`** once completed.
+* 🎙️ **Rich Media Aware:** Indexes voice note durations, videos, images, shared vCard contact cards, and polls with their voting options.
+* 📱 **Native WhatsApp Formatting:** Sanitized for mobile displays using native WhatsApp markdown (`*bold*`, `_italics_`, `• bullets`) with zero broken raw markdown headers or unreadable tables.
+* 🔑 **Dual Pairing Modes:** Supports instant terminal QR code scanning or headless 8-character pairing codes (`ABCD-1234`) for remote VPS and cloud deployments.
+
+---
+
+## 🎮 Commands & Usage
+
+All commands run directly in your WhatsApp **"Message yourself"** chat:
+
+### 📱 In WhatsApp Self-Chat
+
+| Command | Action | Example |
+| :--- | :--- | :--- |
+| `!ask <question>` | Ask anything about your messages, chats, or media | `!ask what did Patil Ayush message me today?` |
+| `!get <filename>` | Locate and deliver the real document file directly to you | `!get tax invoice 26200792` |
+| `!send <filename>` | Alternative trigger to fetch and deliver a file | `!send 360 A Jay enterprises pdf` |
+| `!status` / `!stats` | View real-time database stats, message counts, and sync state | `!status` |
+| `!unlink` | Unlink current WhatsApp account (keeps message history database) | `!unlink` |
+| `!unlink --delete-data` | Unlink account and wipe all databases, sessions, and downloads | `!reset` |
+
+---
+
+### 💻 Terminal CLI Utility Commands
+
+You can manage WAmate directly from your terminal:
+
+```bash
+# 1. Print indexing and database statistics without starting the bot
+python3 main.py --status
+
+# 2. Unlink account (prompts for confirmation; message history preserved)
+python3 main.py --unlink
+
+# 3. Unlink account and wipe all databases and downloaded files
+python3 main.py --unlink --delete-data
+
+# 4. Immediate headless reset (skips confirmation prompt; ideal for Docker/scripts)
+python3 main.py --reset -y
+```
 
 ---
 
@@ -45,30 +104,31 @@ flowchart TD
 
     subgraph WAmate["WAmate Core (Local / VPS / Docker)"]
         WASock["WhatsApp Engine (Neonize / whatsmeow)"]
-        DB[("SQLite Database & FTS5\n- messages & fts index\n- contacts & address book\n- rich media payloads")]
+        DB[("SQLite Database & FTS5\n- messages & fts index\n- contacts & LID mappings\n- media_ocr_cache\n- rich metadata")]
         Agent["Gemini Multimodal Agent\n(gemini-3.5-flash-lite)"]
         Formatter["WhatsApp Markdown Sanitizer"]
     end
 
-    Contacts -->|Incoming & Outgoing Messages| WASock
-    Phone -->|History Sync Chunks| WASock
-    WASock -->|Index Messages & Address Book| DB
+    Contacts -->|Real-time Incoming/Outgoing| WASock
+    Phone -->|HistorySync Batches| WASock
+    WASock -->|Batch Index Messages & LIDs| DB
 
-    SelfChat -->|'!ask what was the invoice total?'| WASock
-    WASock -->|Query Intent & Dispatch| Agent
+    SelfChat -->|'!ask what did Jay send me?'| WASock
+    WASock -->|1. React ⏳ on bubble| SelfChat
+    WASock -->|2. Dispatch query| Agent
     Agent <-->|Tools: search_history, inspect_ocr, find_media| DB
     Agent -->|Raw AI Response| Formatter
     Formatter -->|Sanitized WhatsApp Reply| WASock
-    WASock -->|Reply ONLY to Self-Chat| SelfChat
+    WASock -->|3. Send Reply + React ✅| SelfChat
 ```
 
 ---
 
-## 🚀 Quick Start (Local / WSL / Ubuntu)
+## 🚀 Quick Start Guide
 
 ### 1. Prerequisites
 * **Python 3.12+**
-* **FFmpeg** (for audio/video media operations):
+* **FFmpeg & SQLite3** (for media operations and audio processing):
   ```bash
   sudo apt update && sudo apt install -y ffmpeg libmagic1 sqlite3
   ```
@@ -76,42 +136,32 @@ flowchart TD
 
 ---
 
-### 2. Clone the Repository
+### 2. Installation
+
+Clone the repository and set up a virtual environment:
+
 ```bash
 git clone https://github.com/y345-git/WAmate.git
 cd WAmate
-```
 
----
-
-### 3. Set Up Virtual Environment
-
-Create and activate a clean virtual environment:
-```bash
+# Create and activate virtual environment
 python3 -m venv .venv
 source .venv/bin/activate
-```
 
-> **Tip for existing setups:** If you already created a virtual environment at `/home/yash/.venvs/wamcpbot`, simply activate that instead:
-> ```bash
-> source /home/yash/.venvs/wamcpbot/bin/activate
-> ```
-
-Install requirements:
-```bash
+# Install dependencies
 pip install -r requirements.txt
 ```
 
 ---
 
-### 4. Configure Environment Variables
+### 3. Configuration
 
-Copy `.env.example` to `.env`:
+Copy the example environment template:
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env` with your API key:
+Configure your `.env` file:
 ```ini
 # [REQUIRED] Google Gemini API Key
 GEMINI_API_KEY=AIzaSy...your_gemini_api_key_here
@@ -119,14 +169,14 @@ GEMINI_API_KEY=AIzaSy...your_gemini_api_key_here
 # [OPTIONAL] Gemini Model (default: gemini-3.5-flash-lite)
 GEMINI_MODEL=gemini-3.5-flash-lite
 
-# [OPTIONAL] Command Prefix (default: !ask)
+# [OPTIONAL] Command Prefix in Self-Chat (default: !ask)
 COMMAND_PREFIX=!ask
 
 # [OPTIONAL] Phone Number for 8-digit Pairing Code (no '+' or dashes)
-# e.g., 919876543210 (Leave blank to use terminal QR code)
+# e.g., 919876543210 (Leave blank to use console QR code)
 PHONE_NUMBER=
 
-# Data & Database directory
+# Data & Database Directory
 DATA_DIR=./data
 TZ=Asia/Kolkata
 LOG_LEVEL=INFO
@@ -134,129 +184,90 @@ LOG_LEVEL=INFO
 
 ---
 
-### 5. Run the Application
+### 4. Run WAmate
 
 ```bash
 python3 main.py
 ```
 
-* **If `PHONE_NUMBER` is left empty:** A QR code will display directly in your console. Open WhatsApp on your phone > **Linked Devices** > **Link a Device** and scan the QR code.
-* **If `PHONE_NUMBER` is configured:** An 8-character pairing code (e.g. `ABCD-1234`) will be printed. In WhatsApp, tap **Link with phone number instead** and type in the code.
+* **QR Code Pairing (Default):** A clean ASCII QR code will display in your terminal. Open WhatsApp on your phone > **Linked Devices** > **Link a Device** and scan the QR code.
+* **Phone Pairing Code:** If `PHONE_NUMBER` is set in `.env`, WAmate prints an 8-character pairing code (e.g. `ABCD-1234`). In WhatsApp, tap **Link with phone number instead** and enter the code.
 
-Once paired, your session is saved in `data/whatsapp_session.sqlite3`. On subsequent restarts, **WAmate reconnects in under a second without re-scanning!**
+> [!NOTE]
+> Once paired, your authentication session is stored in `data/whatsapp_session.sqlite3`. On restarts, **WAmate reconnects in under 2 seconds without re-scanning**.
 
 ---
 
 ## 🐳 Docker Deployment (Recommended for VPS)
 
-WAmate includes a multi-stage `Dockerfile` and `docker-compose.yml` with persistent volume mapping for sessions and databases.
+WAmate includes a containerized setup with volume mapping for databases and persistent sessions.
 
-### 1. Configure `.env`
-Ensure your `.env` contains your `GEMINI_API_KEY`.
-
-### 2. Start with Docker Compose
 ```bash
+# 1. Start the container in background
 docker compose up -d --build
-```
 
-### 3. View Logs / Scan QR Code
-```bash
+# 2. View pairing QR code in container logs
 docker logs -f wamate
-```
 
-To stop:
-```bash
+# 3. Stop the container
 docker compose down
 ```
 
 ---
 
-## 💬 How to Use WAmate
+## 💡 Example Queries to Try
 
-Open your WhatsApp and go to your **"Message yourself"** chat (the chat with your own phone number or name):
+Once WAmate completes its initial sync, try these queries in your self-chat:
 
-| Command / Query Example | What WAmate Does |
-| :--- | :--- |
-| `!ask what did Jay message me about yesterday?` | Searches your 1-on-1 chat history with Jay and recaps key points |
-| `!ask what was the color of kurta that Jay shared yesterday?` | Checks Jay's chat, finds the photos, and uses AI Vision OCR to describe the kurta |
-| `!ask get me the invoices from Education group` | Locates the latest invoices and sends the actual PDF documents directly to you |
-| `!ask what does the latest pdf in Education contain?` | Reads the PDF (even scanned PDFs) with multimodal OCR and gives a clean summary |
-| `!ask find the contact card for Dr. Patil` | Searches all shared vCard contact cards and returns phone number & details |
-| `!ask who messaged me recently about the server downtime?` | Searches across all chats and reports exact timestamps, senders, and quotes |
-| `!unlink` | Unlinks current WhatsApp account (preserves saved message database) |
-| `!unlink --delete-data` | Unlinks WhatsApp account AND wipes all saved messages, contacts, and media |
-
----
-
-## 🔄 Unlinking & Switching Accounts
-
-WAmate makes it easy to unlink your account or switch to a new phone number at any time, either directly from WhatsApp chat or via terminal CLI.
-
-### Option 1: Directly from WhatsApp Self-Chat
-* **Unlink Account (keep database):**
-  Send `!unlink` (or `!logout`) in your self-chat.
-* **Unlink & Wipe All Data:**
-  Send `!unlink --delete-data` (or `!reset`) in your self-chat.
-
-### Option 2: From the Terminal CLI
-```bash
-# Unlink account only (prompts for confirmation; message history preserved)
-python3 main.py --unlink
-
-# Unlink account and wipe all databases & cached media
-python3 main.py --unlink --delete-data
-
-# Fast reset without confirmation prompts (useful for scripts / Docker)
-python3 main.py --reset -y
-```
-
-Once unlinked, simply run `python3 main.py` to link a brand-new WhatsApp account!
+* **Conversations & Catch-ups:**
+  * `!ask summarize my chats from today`
+  * `!ask what did Patil Ayush tell me about the meeting yesterday?`
+  * `!ask who messaged me about the server downtime?`
+* **Clothing, Visual Items & OCR:**
+  * `!ask what was the color of the kurta Jay shared?`
+  * `!ask what is the total amount in the Paytm payment screenshot sent to Nikhil?`
+  * `!ask read the handwritten note photo sent in Work group`
+* **Documents & Actual Delivery:**
+  * `!get exam timetable pdf`
+  * `!send the latest quotation from Jay Enterprises`
+  * `!ask what are the payment terms mentioned in the PO 360 A document?`
+* **Products & Shared Links:**
+  * `!ask what all jacket and hoodie links did Jay share today?`
+  * `!ask find the Amazon link for the monitor sent last week`
+* **Contacts & Polls:**
+  * `!ask find the contact card for Dr. Patil`
+  * `!ask what were the options in the weekend trip poll?`
 
 ---
 
-## 📂 Project Structure
+## 🔒 Privacy & Local Security
 
-```text
-WAmate/
-├── bot/
-│   ├── config.py             # Environment configuration & validation
-│   ├── database.py           # SQLite FTS5 engine, schema migrations & contact resolution
-│   ├── gemini_agent.py       # Google Gemini SDK agent & autonomous tool dispatcher
-│   ├── utils.py              # Media parsers, document readers, and WhatsApp markdown sanitizer
-│   └── whatsapp_client.py    # Neonize/whatsmeow client event handlers & media downloader
-├── data/                     # Local persistent database, sessions, and downloads (git-ignored)
-├── .env.example              # Template configuration
-├── .gitignore                # Security rules (never commits tokens, sessions, or db)
-├── Dockerfile                # Production Docker container definition
-├── docker-compose.yml        # Docker compose service setup
-├── main.py                   # Application entrypoint
-├── requirements.txt          # Python dependencies
-└── README.md                 # Documentation
-```
+* **Zero Cloud History Storage:** Your message history, contact names, and media stay 100% on your local machine or private server in SQLite.
+* **Isolated Triggering:** WAmate ignores messages in all external 1-on-1 and group chats. Only commands issued by **you in your self-chat** trigger the assistant.
+* **Safe Repository Defaults:** The `.gitignore` excludes session databases, SQLite message stores, `.env`, and downloaded files.
 
 ---
 
-## 🔒 Privacy & Security
+## 🛠️ Troubleshooting & FAQ
 
-* **Operates Strictly in Self-Chat:** All triggers and responses are strictly isolated to your personal self-chat.
-* **Local Data Storage:** Message history, address book caches, and media files are stored strictly on your local machine / server in SQLite (`data/whatsapp_messages.db`).
-* **Zero Third-Party Telemetry:** No tracking, telemetry, or external servers are involved except for Google Gemini API calls when answering queries.
-* **Safe `.gitignore` by Default:** Session databases, credentials, `.env`, and downloaded files are excluded from Git to prevent accidental leaks.
+<details>
+<summary><b>1. FFmpeg warning on startup?</b></summary>
+Install FFmpeg on your host system:
+<code>sudo apt update && sudo apt install -y ffmpeg</code>
+</details>
 
----
+<details>
+<summary><b>2. How do I know when message history is fully synced?</b></summary>
+Send <code>!status</code> in your WhatsApp self-chat or run <code>python3 main.py --status</code> in your terminal to see current indexed message counts and date ranges.
+</details>
 
-## 🛠️ Troubleshooting
-
-* **Media operations fail / FFmpeg warning:**
-  Install ffmpeg on your machine:
-  `sudo apt install ffmpeg`
-* **Protobuf version warning:**
-  Ensure you are using `protobuf>=7.34.0` in your virtualenv (`pip install -r requirements.txt`).
-* **Download failed with status code 410:**
-  WhatsApp media download links expire on Meta's CDN after ~30 days. WAmate automatically falls back to newer matching files.
+<details>
+<summary><b>3. Why are media links older than 30 days failing to download?</b></summary>
+WhatsApp media links expire on Meta's CDN after approximately 30 days. WAmate automatically falls back to newer matching files when available.
+</details>
 
 ---
 
 ## 📄 License
 
-This project is licensed under the [MIT License](LICENSE).
+This project is open-source and distributed under the [MIT License](LICENSE).
