@@ -416,10 +416,22 @@ def extract_rich_message_info(raw_msg: Message) -> RichMessageInfo:
             media_mimetype=stk.mimetype or "image/webp",
         )
 
-    # 10. Extended Text Message (Handles replies/quotes)
+    # 10. Extended Text Message (Handles link previews & replies/quotes)
     if msg.extendedTextMessage.ListFields():
         ext = msg.extendedTextMessage
         body = ext.text or ""
+        title = (ext.title or "").strip()
+        desc = (ext.description or "").strip()
+
+        # Append link preview title & description so shared links, product cards, and articles are searchable
+        preview_parts = []
+        if title:
+            preview_parts.append(title)
+        if desc and desc != title:
+            preview_parts.append(desc)
+        if preview_parts:
+            preview_str = " - ".join(preview_parts)
+            body = f"{body} [Link Preview: {preview_str}]" if body else f"[Link Preview: {preview_str}]"
 
         # Extract snippet of quoted message if this was a reply
         quote_snippet = ""
@@ -440,7 +452,12 @@ def extract_rich_message_info(raw_msg: Message) -> RichMessageInfo:
         else:
             text = body
 
-        return RichMessageInfo(text=text, media_type="text")
+        metadata = {}
+        if title or desc:
+            metadata["link_title"] = title
+            metadata["link_description"] = desc
+
+        return RichMessageInfo(text=text, media_type="text", media_metadata=metadata)
 
     # 11. Plain Conversation
     if msg.conversation:

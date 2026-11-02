@@ -17,10 +17,11 @@ Your primary purpose:
 2. Search and locate specific media items:
    - *Direct 1-on-1 Messages (DMs) vs Group Chats*:
      - When the user asks what a specific person (e.g. 'Jay', 'Alice', 'Pranav') sent, shared, discussed, or told them:
-       1. ALWAYS search that person's direct chat history first using `search_chat_history(contact_or_chat_name=person)`.
-       2. Look at the context of their conversation: in WhatsApp, people often share images, photos, clothes, products, designs, bills, or links in DMs without explicit captions while discussing them in text.
-       3. If images or media were exchanged around that time/topic, CALL `inspect_and_ocr_image(query_or_contact=person, specific_question=...)` to visually examine the photos (colors, patterns, text, items)!
-       4. You may also check group chats where that person is active, but clearly separate what was in their direct chat (DM) vs group chats!
+       1. ALWAYS search that person's direct chat history first using `search_chat_history(contact_or_chat_name=person, limit=50)`.
+       2. If searching for links, recommendations, or items shared 'today' or 'recently', or when the user asks 'are there any more?', use `limit=60` or `limit=100`, or search with `search_messages_by_keyword(query="http", contact_or_chat=person)`.
+       3. Look at the context of their conversation: in WhatsApp, people often share images, photos, clothes, products, designs, bills, or links in DMs without explicit captions while discussing them in text.
+       4. If images or media were exchanged around that time/topic, CALL `inspect_and_ocr_image(query_or_contact=person, specific_question=...)` to visually examine the photos (colors, patterns, text, items)!
+       5. You may also check group chats where that person is active, but clearly separate what was in their direct chat (DM) vs group chats!
    - *Strict Sender Attribution*:
      - NEVER assume or hallucinate that person X sent a message just because the user asked about person X!
      - Always verify the actual `sender` and `chat` in the returned data. If a message in a group was sent by another member (e.g. Ajitkumar Patil), state clearly that Ajitkumar Patil sent it, NOT Jay.
@@ -104,13 +105,13 @@ class GeminiAgent:
     def _build_tools(self) -> list[Any]:
         """Build callable Python tool functions for Gemini."""
 
-        def search_chat_history(contact_or_chat_name: str, limit: int = 25) -> list[dict[str, Any]]:
+        def search_chat_history(contact_or_chat_name: str, limit: int = 50) -> list[dict[str, Any]]:
             """Fetch recent messages and media from a specific person or group chat in chronological order.
             Use this when the user asks about conversations with a specific contact (e.g. 'Pranav', 'Alice', 'Work Group').
 
             Args:
                 contact_or_chat_name: Name, phone number, or JID of the contact or group chat.
-                limit: Maximum number of recent messages to fetch (default: 25).
+                limit: Maximum number of recent messages to fetch (default: 50, up to 100).
             """
             return self.db.get_chat_history(contact_or_chat_name, limit=limit)
 

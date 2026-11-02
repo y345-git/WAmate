@@ -613,7 +613,7 @@ class DatabaseManager:
 
             return None
 
-    def get_chat_history(self, chat_jid_or_name: str, limit: int = 25) -> list[dict[str, Any]]:
+    def get_chat_history(self, chat_jid_or_name: str, limit: int = 50) -> list[dict[str, Any]]:
         """Get recent message history with a specific contact or group in chronological order."""
         target_jid = self.resolve_chat_jid(chat_jid_or_name) or chat_jid_or_name.strip()
         like_name = f"%{chat_jid_or_name.strip().lower()}%"
