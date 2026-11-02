@@ -204,7 +204,12 @@ class WhatsAppBot:
                                 sender_name = sender_jid.split("@")[0] if ("@" in sender_jid and not sender_jid.endswith("@g.us")) else "Participant"
                         else:
                             sender_jid = chat_jid
-                            sender_name = (getattr(wmsg, "pushName", "") or "").strip() or chat_name
+                            push_name = (getattr(wmsg, "pushName", "") or "").strip()
+                            sender_name = push_name or chat_name
+                            if not sender_name and "@s.whatsapp.net" in chat_jid:
+                                sender_name = chat_jid.split("@")[0]
+                            if not chat_name:
+                                chat_name = sender_name or (chat_jid.split("@")[0] if "@s.whatsapp.net" in chat_jid else "")
 
                         rich_info = extract_rich_message_info(wmsg.message)
                         timestamp = normalize_timestamp(wmsg.messageTimestamp)
@@ -298,15 +303,24 @@ class WhatsAppBot:
                 if not is_from_me and not sender_display_name and sender_jid:
                     c_info = self.db.get_contact(sender_jid)
                     if c_info:
-                        sender_display_name = c_info.get("name") or c_info.get("push_name") or ""
+                        sender_display_name = c_info.get("name") or c_info.get("push_name") or c_info.get("phone_number") or ""
                 if not sender_display_name:
                     sender_display_name = sender_jid.split("@")[0] if ("@" in sender_jid and not is_group) else ("You" if is_from_me else "Participant")
+
+                # Resolve chat display name for 1-on-1 DMs with unsaved contacts
+                chat_display_name = None
+                if not is_group:
+                    c_chat = self.db.get_contact(chat_jid)
+                    if c_chat:
+                        chat_display_name = c_chat.get("name") or c_chat.get("push_name") or c_chat.get("phone_number")
+                    if not chat_display_name:
+                        chat_display_name = sender_display_name if not is_from_me else (chat_jid.split("@")[0] if "@s.whatsapp.net" in chat_jid else None)
 
                 # Index message with full rich media metadata into database
                 self.db.insert_message(
                     msg_id=msg_id,
                     chat_jid=chat_jid,
-                    chat_name=None,
+                    chat_name=chat_display_name,
                     sender_jid=sender_jid,
                     sender_name=sender_display_name,
                     text=text,

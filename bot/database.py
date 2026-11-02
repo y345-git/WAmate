@@ -318,28 +318,75 @@ class DatabaseManager:
             return {"valid_ocr": total_cached, "expired_or_skipped": total_expired}
 
     def backfill_contact_names(self) -> None:
-        """Backfill chat_name and sender_name across messages from contacts table."""
+        """Backfill chat_name and sender_name across messages from contacts table and phone JIDs."""
         with self._get_connection() as conn:
+            # 1. Update chat_name from contacts table (name, push_name, or phone_number)
             conn.execute("""
             UPDATE messages
             SET chat_name = (
-                SELECT COALESCE(NULLIF(contacts.name, ''), NULLIF(contacts.push_name, ''))
+                SELECT COALESCE(NULLIF(contacts.name, ''), NULLIF(contacts.push_name, ''), NULLIF(contacts.phone_number, ''))
                 FROM contacts WHERE contacts.jid = messages.chat_jid
             )
             WHERE chat_jid IN (
-                SELECT jid FROM contacts WHERE (name IS NOT NULL AND name != '') OR (push_name IS NOT NULL AND push_name != '')
+                SELECT jid FROM contacts WHERE (name IS NOT NULL AND name != '') 
+                    OR (push_name IS NOT NULL AND push_name != '')
+                    OR (phone_number IS NOT NULL AND phone_number != '')
             );
             """)
+
+            # 2. Update sender_name from contacts table
             conn.execute("""
             UPDATE messages
             SET sender_name = (
-                SELECT COALESCE(NULLIF(contacts.name, ''), NULLIF(contacts.push_name, ''), contacts.phone_number)
+                SELECT COALESCE(NULLIF(contacts.name, ''), NULLIF(contacts.push_name, ''), NULLIF(contacts.phone_number, ''))
                 FROM contacts WHERE contacts.jid = messages.sender_jid
             )
             WHERE is_from_me = 0 AND sender_jid IN (
-                SELECT jid FROM contacts WHERE (name IS NOT NULL AND name != '') OR (push_name IS NOT NULL AND push_name != '') OR (phone_number IS NOT NULL AND phone_number != '')
+                SELECT jid FROM contacts WHERE (name IS NOT NULL AND name != '') 
+                    OR (push_name IS NOT NULL AND push_name != '') 
+                    OR (phone_number IS NOT NULL AND phone_number != '')
             );
             """)
+
+            # 3. For any 1-on-1 chats where chat_name is still empty, fallback to phone number from chat_jid
+            conn.execute("""
+            UPDATE messages
+            SET chat_name = SUBSTR(chat_jid, 1, INSTR(chat_jid, '@') - 1)
+            WHERE is_group = 0 AND (chat_name IS NULL OR chat_name = '') AND chat_jid LIKE '%@s.whatsapp.net';
+            """)
+
+            # 4. For any 1-on-1 chats where sender_name is still empty, fallback to phone number from sender_jid
+            conn.execute("""
+            UPDATE messages
+            SET sender_name = SUBSTR(sender_jid, 1, INSTR(sender_jid, '@') - 1)
+            WHERE is_group = 0 AND is_from_me = 0 AND (sender_name IS NULL OR sender_name = '') AND sender_jid LIKE '%@s.whatsapp.net';
+            """)
+
+            # 5. If chat_name is still empty for any message, use the non-empty sender_name of the other party in that chat
+            conn.execute("""
+            UPDATE messages
+            SET chat_name = (
+                SELECT m2.sender_name FROM messages m2
+                WHERE m2.chat_jid = messages.chat_jid AND m2.is_from_me = 0 
+                  AND m2.sender_name IS NOT NULL AND m2.sender_name != ''
+                ORDER BY m2.timestamp DESC
+                LIMIT 1
+            )
+            WHERE is_group = 0 AND (chat_name IS NULL OR chat_name = '')
+              AND EXISTS (
+                SELECT 1 FROM messages m2 
+                WHERE m2.chat_jid = messages.chat_jid AND m2.is_from_me = 0 
+                  AND m2.sender_name IS NOT NULL AND m2.sender_name != ''
+              );
+            """)
+
+            # 6. Fallback any remaining empty chat_name to chat_jid prefix
+            conn.execute("""
+            UPDATE messages
+            SET chat_name = SUBSTR(chat_jid, 1, INSTR(chat_jid, '@') - 1)
+            WHERE (chat_name IS NULL OR chat_name = '') AND INSTR(chat_jid, '@') > 1;
+            """)
+
             conn.commit()
 
     def insert_message(
@@ -368,17 +415,21 @@ class DatabaseManager:
         if timestamp > 10_000_000_000:
             timestamp = timestamp // 1000
 
-        # If chat_name or sender_name is missing, try looking them up in contacts
+        # If chat_name or sender_name is missing, try looking them up in contacts or phone JID
         if not chat_name or not sender_name:
             with self._get_connection() as conn:
                 if not chat_name:
-                    row = conn.execute("SELECT name, push_name FROM contacts WHERE jid = ?", (chat_jid,)).fetchone()
+                    row = conn.execute("SELECT name, push_name, phone_number FROM contacts WHERE jid = ?", (chat_jid,)).fetchone()
                     if row:
-                        chat_name = row["name"] or row["push_name"]
+                        chat_name = row["name"] or row["push_name"] or row["phone_number"]
+                    if not chat_name and not is_group and "@s.whatsapp.net" in chat_jid:
+                        chat_name = chat_jid.split("@")[0]
                 if not sender_name:
-                    row = conn.execute("SELECT name, push_name FROM contacts WHERE jid = ?", (sender_jid,)).fetchone()
+                    row = conn.execute("SELECT name, push_name, phone_number FROM contacts WHERE jid = ?", (sender_jid,)).fetchone()
                     if row:
-                        sender_name = row["name"] or row["push_name"]
+                        sender_name = row["name"] or row["push_name"] or row["phone_number"]
+                    if not sender_name and not is_group and "@s.whatsapp.net" in sender_jid:
+                        sender_name = sender_jid.split("@")[0]
 
         if isinstance(media_metadata, dict):
             metadata_str = json.dumps(media_metadata)
