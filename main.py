@@ -154,7 +154,7 @@ def main():
         print(f" • Contacts & Groups:    {stats['total_contacts']:,} ({stats['total_groups']} groups)")
         print(f" • History Date Range:   {stats['oldest_date']} -> {stats['newest_date']}")
         print(f" • OCR Media Cache:      {stats['total_ocr_cached']}")
-        print(f" • Idle OCR Worker:      {'Enabled (lookback: ' + str(Config.IDLE_OCR_LOOKBACK_HOURS) + 'h)' if Config.ENABLE_IDLE_OCR else 'Disabled'}")
+        print(f" • Idle OCR Worker:      {'Enabled (lookback: ' + str(Config.IDLE_OCR_LOOKBACK_HOURS) + 'h, budget: ' + str(Config.IDLE_OCR_DAILY_BUDGET) + '/day)' if Config.ENABLE_IDLE_OCR else 'Disabled (On-Demand only)'}")
         print(f" • Database File Size:   {stats['db_size_mb']} MB")
         print("=" * 60 + "\n")
         sys.exit(0)

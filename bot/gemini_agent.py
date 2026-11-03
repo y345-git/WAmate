@@ -94,18 +94,35 @@ class GeminiAgent:
                 f"You are an expert OCR and visual analysis engine. Examine this document/image carefully. "
                 f"Extract all relevant text, numbers, line items, and visual information to address this specific question: {prompt}"
             )
-        try:
-            part = types.Part.from_bytes(data=file_bytes, mime_type=mimetype)
-            resp = self.client.models.generate_content(
-                model=self.model_name,
-                contents=[user_prompt, part],
-            )
-            if resp and resp.text:
-                return resp.text.strip()
-            return "OCR analysis completed but returned empty text."
-        except Exception as e:
-            logger.exception("Gemini Multimodal OCR failed: %s", e)
-            return f"OCR processing error: {str(e)}"
+
+        candidate_models = [self.model_name]
+        for m in ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash"]:
+            if m not in candidate_models:
+                candidate_models.append(m)
+
+        part = types.Part.from_bytes(data=file_bytes, mime_type=mimetype)
+        last_error = None
+
+        for model in candidate_models:
+            try:
+                resp = self.client.models.generate_content(
+                    model=model,
+                    contents=[user_prompt, part],
+                )
+                if resp and resp.text:
+                    return resp.text.strip()
+                return "OCR analysis completed but returned empty text."
+            except Exception as e:
+                err_str = str(e)
+                last_error = e
+                logger.warning("OCR failed on model %s: %s", model, e)
+                if any(k in err_str for k in ("RESOURCE_EXHAUSTED", "429", "NOT_FOUND", "404")):
+                    time.sleep(2)
+                    continue
+                break
+
+        logger.exception("Gemini Multimodal OCR failed: %s", last_error)
+        return f"OCR processing error: {str(last_error)}"
 
     def _build_tools(self) -> list[Any]:
         """Build callable Python tool functions for Gemini."""
@@ -294,52 +311,52 @@ class GeminiAgent:
                 logger.warning("Synthesis prompt failed: %s", synth_err)
             return None
 
-        try:
-            chat = self.client.chats.create(
-                model=self.model_name,
-                config=config,
-            )
-            response = chat.send_message(user_query)
+        candidate_models = [self.model_name]
+        for m in ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash", "gemini-2.5-flash-lite"]:
+            if m not in candidate_models:
+                candidate_models.append(m)
 
-            result = _extract_or_synthesize(chat, response)
-            if result:
-                return result
-            return "I couldn't retrieve a response from Gemini. Please try again."
+        last_error = None
+        quota_exhausted = False
 
-        except Exception as e:
-            err_str = str(e)
-            if "RESOURCE_EXHAUSTED" in err_str or "429" in err_str:
-                logger.warning("Gemini 429 quota reached. Waiting 8s for rate limit window and retrying...")
-                time.sleep(8)
-                try:
-                    retry_chat = self.client.chats.create(
-                        model=self.model_name,
-                        config=config,
-                    )
-                    retry_resp = retry_chat.send_message(user_query)
-                    retry_result = _extract_or_synthesize(retry_chat, retry_resp)
-                    if retry_result:
-                        return retry_result
-                except Exception as retry_err:
-                    logger.warning("Retry after 429 wait failed: %s", retry_err)
-
-            if ("RESOURCE_EXHAUSTED" in err_str or "429" in err_str or "NOT_FOUND" in err_str or "404" in err_str) and self.model_name != "gemini-3.5-flash-lite":
-                logger.warning(
-                    "Model %s encountered quota/availability issue (%s). Retrying with gemini-3.5-flash-lite...",
-                    self.model_name,
-                    e,
+        for model in candidate_models:
+            try:
+                chat = self.client.chats.create(
+                    model=model,
+                    config=config,
                 )
-                try:
-                    fallback_chat = self.client.chats.create(
-                        model="gemini-3.5-flash-lite",
-                        config=config,
-                    )
-                    fallback_response = fallback_chat.send_message(user_query)
-                    fallback_result = _extract_or_synthesize(fallback_chat, fallback_response)
-                    if fallback_result:
-                        return fallback_result
-                except Exception as fallback_err:
-                    logger.exception("Fallback to gemini-3.5-flash-lite also failed: %s", fallback_err)
+                response = chat.send_message(user_query)
 
-            logger.exception("Error during Gemini generation: %s", e)
-            return f"⚠️ *Error processing request:*\n`{str(e)}`"
+                result = _extract_or_synthesize(chat, response)
+                if result:
+                    return result
+                return "I couldn't retrieve a response from Gemini. Please try again."
+
+            except Exception as e:
+                err_str = str(e)
+                last_error = e
+                logger.warning("Gemini query failed on model %s: %s", model, e)
+
+                if "RESOURCE_EXHAUSTED" in err_str or "429" in err_str:
+                    quota_exhausted = True
+                    # Short pause for momentary RPM bursts before trying next fallback model
+                    time.sleep(3)
+                    continue
+
+                if "NOT_FOUND" in err_str or "404" in err_str:
+                    continue
+
+                # Unrecoverable error (e.g. invalid argument, bad input)
+                break
+
+        if quota_exhausted:
+            return (
+                "⚠️ *Gemini Daily Quota Exceeded (429)*\n\n"
+                "The free-tier limit of 500 requests per day (RPD) has been reached on your Gemini API key across models.\n\n"
+                "• *Reset Time:* Quotas automatically reset daily at 00:00 UTC (05:30 IST).\n"
+                "• *Background OCR:* Disabled by default to preserve your daily quota for chat queries.\n"
+                "• *Solution:* You can provide a secondary API key or enable pay-as-you-go billing in Google AI Studio."
+            )
+
+        logger.exception("Error during Gemini generation: %s", last_error)
+        return f"⚠️ *Error processing request:*\n`{str(last_error)}`"

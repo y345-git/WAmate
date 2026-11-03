@@ -414,9 +414,11 @@ class WhatsAppBot:
 
             stats = self.db.get_stats()
             sync_state = "Fully indexed & Real-time active ✅" if getattr(self, "history_sync_completed", False) else "Indexed (Real-time active) ✅"
-            idle_state = "Active 🟢" if Config.ENABLE_IDLE_OCR else "Disabled"
-            if Config.ENABLE_IDLE_OCR and self._idle_worker_stats["processed"] > 0:
-                idle_state += f" ({self._idle_worker_stats['processed']} pre-cached)"
+            idle_state = (
+                f"Active 🟢 ({self._idle_worker_stats['processed']} pre-cached, budget: {Config.IDLE_OCR_DAILY_BUDGET}/day)"
+                if Config.ENABLE_IDLE_OCR
+                else "Disabled (On-Demand only ⚡)"
+            )
 
             reply = (
                 "📊 *WAmate Second Brain Status*\n\n"
@@ -982,10 +984,11 @@ class WhatsAppBot:
         )
         self._idle_worker_thread.start()
         logger.info(
-            "Idle Background OCR Worker started (lookback: %dh, delay: %ds, max/cycle: %d).",
+            "Idle Background OCR Worker started (lookback: %dh, delay: %ds, max/cycle: %d, daily budget: %d).",
             Config.IDLE_OCR_LOOKBACK_HOURS,
             Config.IDLE_OCR_DELAY_SECONDS,
             Config.IDLE_OCR_MAX_PER_RUN,
+            Config.IDLE_OCR_DAILY_BUDGET,
         )
 
     def _idle_ocr_worker(self) -> None:
@@ -995,7 +998,26 @@ class WhatsAppBot:
         if self._stop_worker_event.wait(20.0):
             return
 
+        current_day = datetime.now().date()
+        daily_ocr_count = 0
+
         while not self._stop_worker_event.is_set():
+            today = datetime.now().date()
+            if today != current_day:
+                current_day = today
+                daily_ocr_count = 0
+                logger.info("Idle OCR: Daily quota budget reset for new day (%s).", current_day)
+
+            # Check if daily budget has been reached
+            if daily_ocr_count >= Config.IDLE_OCR_DAILY_BUDGET:
+                logger.info(
+                    "Idle OCR: Daily quota budget reached (%d/%d requests today). Pausing background worker until midnight.",
+                    daily_ocr_count,
+                    Config.IDLE_OCR_DAILY_BUDGET,
+                )
+                if self._stop_worker_event.wait(1800.0):
+                    break
+                continue
             # If client is not connected, wait
             if not getattr(self.client, "is_connected", False):
                 if self._stop_worker_event.wait(5.0):
@@ -1090,6 +1112,7 @@ class WhatsAppBot:
                     if analysis and not analysis.startswith("OCR processing error"):
                         self.db.save_ocr_cache(msg_id, analysis, mimetype=detected_mimetype or mimetype)
                         processed_in_cycle += 1
+                        daily_ocr_count += 1
                         self._idle_worker_stats["processed"] += 1
                         self._idle_worker_stats["last_active"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         chat_jid = item.get("chat_jid") or ""
@@ -1101,15 +1124,34 @@ class WhatsAppBot:
                             chat_type = "Self-Chat"
 
                         logger.info(
-                            "Idle OCR: Pre-cached %s image %s from '%s' (%d/%d in cycle).",
+                            "Idle OCR: Pre-cached %s image %s from '%s' (%d/%d in cycle, %d/%d today).",
                             chat_type,
                             msg_id,
                             chat_name,
                             processed_in_cycle,
                             len(candidates),
+                            daily_ocr_count,
+                            Config.IDLE_OCR_DAILY_BUDGET,
                         )
+
+                        if daily_ocr_count >= Config.IDLE_OCR_DAILY_BUDGET:
+                            logger.info(
+                                "Idle OCR: Reached daily budget limit (%d/%d requests). Stopping cycle.",
+                                daily_ocr_count,
+                                Config.IDLE_OCR_DAILY_BUDGET,
+                            )
+                            break
                     else:
                         logger.warning("Idle OCR: Gemini returned error or empty for %s: %s", msg_id, analysis)
+                        err_text = (analysis or "").lower()
+                        if "resource_exhausted" in err_text or "429" in err_text or "quota" in err_text:
+                            logger.warning(
+                                "Idle OCR: Rate limit / daily quota reached (%s). Pausing idle background worker for 2 hours to protect user queries.",
+                                analysis,
+                            )
+                            if self._stop_worker_event.wait(7200.0):
+                                break
+                            break
                         time.sleep(5.0)
 
                 except Exception as ex:

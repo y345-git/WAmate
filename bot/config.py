@@ -25,11 +25,12 @@ class Config:
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()
     TZ: str = os.getenv("TZ", "Asia/Kolkata").strip()
 
-    # Idle Background OCR Configuration
-    ENABLE_IDLE_OCR: bool = os.getenv("ENABLE_IDLE_OCR", "true").lower() in ("true", "1", "yes")
+    # Idle Background OCR Configuration (Disabled by default to preserve free-tier Gemini API quota)
+    ENABLE_IDLE_OCR: bool = os.getenv("ENABLE_IDLE_OCR", "false").lower() in ("true", "1", "yes")
     IDLE_OCR_LOOKBACK_HOURS: int = int(os.getenv("IDLE_OCR_LOOKBACK_HOURS", "48"))
     IDLE_OCR_DELAY_SECONDS: int = int(os.getenv("IDLE_OCR_DELAY_SECONDS", "12"))
     IDLE_OCR_MAX_PER_RUN: int = int(os.getenv("IDLE_OCR_MAX_PER_RUN", "100"))
+    IDLE_OCR_DAILY_BUDGET: int = int(os.getenv("IDLE_OCR_DAILY_BUDGET", "50"))
     IDLE_OCR_INCLUDE_STATUSES: bool = os.getenv("IDLE_OCR_INCLUDE_STATUSES", "false").lower() in ("true", "1", "yes")
 
     @classmethod
