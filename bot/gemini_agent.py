@@ -96,7 +96,7 @@ class GeminiAgent:
             )
 
         candidate_models = [self.model_name]
-        for m in ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash"]:
+        for m in ["gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-3.8-flash"]:
             if m not in candidate_models:
                 candidate_models.append(m)
 
@@ -116,8 +116,9 @@ class GeminiAgent:
                 err_str = str(e)
                 last_error = e
                 logger.warning("OCR failed on model %s: %s", model, e)
-                if any(k in err_str for k in ("RESOURCE_EXHAUSTED", "429", "NOT_FOUND", "404")):
-                    time.sleep(2)
+                # If rate-limited (429), model not found (404), or server unavailable/overloaded (503/500), try next model
+                if any(k in err_str for k in ("RESOURCE_EXHAUSTED", "429", "NOT_FOUND", "404", "UNAVAILABLE", "503", "500", "overloaded")):
+                    time.sleep(1.5)
                     continue
                 break
 
@@ -312,7 +313,7 @@ class GeminiAgent:
             return None
 
         candidate_models = [self.model_name]
-        for m in ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-2.5-flash", "gemini-2.5-flash-lite"]:
+        for m in ["gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-3.8-flash"]:
             if m not in candidate_models:
                 candidate_models.append(m)
 
@@ -340,10 +341,12 @@ class GeminiAgent:
                 if "RESOURCE_EXHAUSTED" in err_str or "429" in err_str:
                     quota_exhausted = True
                     # Short pause for momentary RPM bursts before trying next fallback model
-                    time.sleep(3)
+                    time.sleep(2)
                     continue
 
-                if "NOT_FOUND" in err_str or "404" in err_str:
+                if any(k in err_str for k in ("NOT_FOUND", "404", "UNAVAILABLE", "503", "500", "overloaded")):
+                    logger.info("Model %s unavailable (%s). Trying next fallback model...", model, err_str[:80])
+                    time.sleep(1.5)
                     continue
 
                 # Unrecoverable error (e.g. invalid argument, bad input)
