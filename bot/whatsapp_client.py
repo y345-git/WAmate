@@ -347,11 +347,12 @@ class WhatsAppBot:
 
                 # Real-time Media Auto-Storage (Zero Gemini API Cost)
                 # Automatically save incoming media while fresh so it remains accessible forever even after 30 days
-                if Config.ENABLE_MEDIA_STORAGE and raw_bytes:
+                if Config.ENABLE_MEDIA_STORAGE and raw_bytes and rich_info.media_type != "text":
                     types_list = [t.strip() for t in Config.MEDIA_STORAGE_TYPES.split(",") if t.strip()]
-                    if rich_info.media_type in types_list:
+                    is_all_types = "all" in types_list or "any" in types_list or not types_list
+                    if is_all_types or rich_info.media_type in types_list:
                         max_bytes = Config.MEDIA_STORAGE_MAX_SIZE_MB * 1024 * 1024
-                        if (rich_info.media_size or 0) <= max_bytes:
+                        if Config.MEDIA_STORAGE_MAX_SIZE_MB <= 0 or (rich_info.media_size or 0) <= max_bytes:
                             if Config.MEDIA_STORAGE_INCLUDE_STATUSES or chat_jid != "status@broadcast":
                                 self._media_executor.submit(self._auto_download_media_task, msg_id)
 
@@ -673,6 +674,10 @@ class WhatsAppBot:
                 safe_filename += ".m4a"
             elif "video" in mimetype.lower():
                 safe_filename += ".mp4"
+            elif "webp" in mimetype.lower():
+                safe_filename += ".webp"
+            elif "gif" in mimetype.lower():
+                safe_filename += ".gif"
 
         # Check if already downloaded locally
         if row.get("local_path") and not str(row["local_path"]).startswith("["):
@@ -1062,7 +1067,7 @@ class WhatsAppBot:
             return
 
         types_tuple = tuple(t.strip() for t in Config.MEDIA_STORAGE_TYPES.split(",") if t.strip())
-        max_bytes = Config.MEDIA_STORAGE_MAX_SIZE_MB * 1024 * 1024
+        max_bytes = Config.MEDIA_STORAGE_MAX_SIZE_MB * 1024 * 1024 if Config.MEDIA_STORAGE_MAX_SIZE_MB > 0 else 0
 
         while not self._stop_worker_event.is_set():
             if not getattr(self.client, "is_connected", False):

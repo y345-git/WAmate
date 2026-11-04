@@ -26,14 +26,14 @@ class Config:
     TZ: str = os.getenv("TZ", "Asia/Kolkata").strip()
 
     # Media Storage & Auto-Download Configuration (Zero Gemini API Cost)
-    # Pre-downloads and stores media files locally while fresh so they remain permanently accessible
-    # even after WhatsApp's 30-day CDN link expiration. OCR is executed strictly on-demand.
+    # Pre-downloads and stores ALL media files locally (images, videos, documents, voice notes, stickers, status updates)
+    # so they remain permanently accessible even after WhatsApp's 30-day CDN link expiration.
     ENABLE_MEDIA_STORAGE: bool = os.getenv("ENABLE_MEDIA_STORAGE", "true").lower() in ("true", "1", "yes")
     MEDIA_STORAGE_LOOKBACK_DAYS: int = int(os.getenv("MEDIA_STORAGE_LOOKBACK_DAYS", "30"))
-    MEDIA_STORAGE_MAX_SIZE_MB: int = int(os.getenv("MEDIA_STORAGE_MAX_SIZE_MB", "25"))
-    MEDIA_STORAGE_TYPES: str = os.getenv("MEDIA_STORAGE_TYPES", "image,document,audio,voice_note").lower()
-    MEDIA_STORAGE_INCLUDE_STATUSES: bool = os.getenv("MEDIA_STORAGE_INCLUDE_STATUSES", "false").lower() in ("true", "1", "yes")
-    MEDIA_STORAGE_DELAY_SECONDS: float = float(os.getenv("MEDIA_STORAGE_DELAY_SECONDS", "2.0"))
+    MEDIA_STORAGE_MAX_SIZE_MB: int = int(os.getenv("MEDIA_STORAGE_MAX_SIZE_MB", "0"))  # 0 = Unlimited (no size limit)
+    MEDIA_STORAGE_TYPES: str = os.getenv("MEDIA_STORAGE_TYPES", "all").lower()  # "all" downloads every media type
+    MEDIA_STORAGE_INCLUDE_STATUSES: bool = os.getenv("MEDIA_STORAGE_INCLUDE_STATUSES", "true").lower() in ("true", "1", "yes")
+    MEDIA_STORAGE_DELAY_SECONDS: float = float(os.getenv("MEDIA_STORAGE_DELAY_SECONDS", "1.5"))
 
     # Idle Background OCR Configuration (Disabled by default to preserve free-tier Gemini API quota)
     ENABLE_IDLE_OCR: bool = os.getenv("ENABLE_IDLE_OCR", "false").lower() in ("true", "1", "yes")

@@ -353,30 +353,37 @@ class DatabaseManager:
         self,
         lookback_days: int = 30,
         limit: int = 50,
-        media_types: tuple[str, ...] = ("image", "document", "audio", "voice_note"),
-        max_size_bytes: int = 25 * 1024 * 1024,
-        include_statuses: bool = False,
+        media_types: tuple[str, ...] = ("all",),
+        max_size_bytes: int = 0,
+        include_statuses: bool = True,
         self_jid: str = "",
     ) -> list[dict[str, Any]]:
         """Fetch media messages within lookback_days that are not yet downloaded locally, prioritizing:
         1. Self-chat messages / notes to self
         2. Direct 1-on-1 Messages (DMs with contacts or unsaved numbers)
         3. Group chats & Announcements
-        4. WhatsApp Status Stories (only if include_statuses is True)
+        4. WhatsApp Status Stories (processed after chats, if include_statuses is True)
         """
         cutoff_ts = int(time.time()) - (lookback_days * 86400)
         status_filter = "" if include_statuses else "AND m.chat_jid != 'status@broadcast'"
-        placeholders = ",".join("?" for _ in media_types)
+
+        # If media_types is "all" or empty, match all non-text media messages
+        is_all_types = not media_types or "all" in media_types or "any" in media_types
+        type_filter = "AND m.media_type != 'text'" if is_all_types else f"AND m.media_type IN ({','.join('?' for _ in media_types)})"
+
+        # If max_size_bytes <= 0, no size restriction
+        size_filter = "" if max_size_bytes <= 0 else "AND (m.media_size <= ? OR m.media_size IS NULL OR m.media_size = 0)"
+
         sql = f"""
         SELECT m.id, m.chat_jid, m.sender_jid, m.timestamp, m.text, 
                m.media_type, m.media_filename, m.media_mimetype, m.media_size,
                m.chat_name, m.sender_name, m.is_group
         FROM messages m
         WHERE (m.local_path IS NULL OR m.local_path = '')
-          AND m.media_type IN ({placeholders})
+          {type_filter}
           AND m.timestamp >= ?
           AND m.raw_message IS NOT NULL
-          AND (m.media_size <= ? OR m.media_size IS NULL OR m.media_size = 0)
+          {size_filter}
           {status_filter}
         ORDER BY 
           CASE 
@@ -389,7 +396,13 @@ class DatabaseManager:
           m.timestamp DESC
         LIMIT ?
         """
-        params = list(media_types) + [cutoff_ts, max_size_bytes, self_jid, self_jid, limit]
+        params = []
+        if not is_all_types:
+            params.extend(media_types)
+        params.append(cutoff_ts)
+        if max_size_bytes > 0:
+            params.append(max_size_bytes)
+        params.extend([self_jid, self_jid, limit])
         with self._get_connection() as conn:
             rows = conn.execute(sql, params).fetchall()
             return [dict(r) for r in rows]
