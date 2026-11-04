@@ -147,12 +147,23 @@ def main():
     if args.status:
         db = DatabaseManager(Config.MESSAGES_DB_PATH)
         stats = db.get_stats()
+
+        stored_mb = 0.0
+        if Config.DOWNLOADS_DIR.exists():
+            try:
+                stored_bytes = sum(f.stat().st_size for f in Config.DOWNLOADS_DIR.glob("*") if f.is_file())
+                stored_mb = round(stored_bytes / (1024 * 1024), 2)
+            except Exception:
+                pass
+
         print("\n" + "=" * 60)
         print("   WAmate - Database & Indexing Status")
         print("=" * 60)
         print(f" • Messages Synced:      {stats['total_messages']:,}")
         print(f" • Contacts & Groups:    {stats['total_contacts']:,} ({stats['total_groups']} groups)")
         print(f" • History Date Range:   {stats['oldest_date']} -> {stats['newest_date']}")
+        print(f" • Stored Media Files:   {stats.get('total_stored_media', 0)} ({stored_mb} MB on disk, 30-day protected)")
+        print(f" • Media Storage Worker: {'Enabled (lookback: ' + str(Config.MEDIA_STORAGE_LOOKBACK_DAYS) + ' days)' if Config.ENABLE_MEDIA_STORAGE else 'Disabled'}")
         print(f" • OCR Media Cache:      {stats['total_ocr_cached']}")
         print(f" • Idle OCR Worker:      {'Enabled (lookback: ' + str(Config.IDLE_OCR_LOOKBACK_HOURS) + 'h, budget: ' + str(Config.IDLE_OCR_DAILY_BUDGET) + '/day)' if Config.ENABLE_IDLE_OCR else 'Disabled (On-Demand only)'}")
         print(f" • Database File Size:   {stats['db_size_mb']} MB")

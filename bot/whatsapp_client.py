@@ -3,6 +3,7 @@ import logging
 import re
 import time
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from typing import Any
 import segno
@@ -62,6 +63,15 @@ class WhatsAppBot:
         self._user_active_event = threading.Event()
         self._idle_worker_thread: threading.Thread | None = None
         self._idle_worker_stats = {"processed": 0, "last_active": None}
+
+        # Media Storage Worker & Auto-Download (Zero Gemini API Cost - keeps media accessible after 30 days)
+        self._media_storage_thread: threading.Thread | None = None
+        self._storage_worker_stats = {
+            "stored": 0,
+            "failed_or_expired": 0,
+            "last_active": "Never",
+        }
+        self._media_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="MediaDownloader")
 
         self._register_handlers()
 
@@ -335,6 +345,16 @@ class WhatsAppBot:
                     raw_message=raw_bytes,
                 )
 
+                # Real-time Media Auto-Storage (Zero Gemini API Cost)
+                # Automatically save incoming media while fresh so it remains accessible forever even after 30 days
+                if Config.ENABLE_MEDIA_STORAGE and raw_bytes:
+                    types_list = [t.strip() for t in Config.MEDIA_STORAGE_TYPES.split(",") if t.strip()]
+                    if rich_info.media_type in types_list:
+                        max_bytes = Config.MEDIA_STORAGE_MAX_SIZE_MB * 1024 * 1024
+                        if (rich_info.media_size or 0) <= max_bytes:
+                            if Config.MEDIA_STORAGE_INCLUDE_STATUSES or chat_jid != "status@broadcast":
+                                self._media_executor.submit(self._auto_download_media_task, msg_id)
+
                 # Determine if this message is inside the user's self-chat ("Message yourself")
                 is_self_chat = False
                 if is_from_me:
@@ -420,11 +440,28 @@ class WhatsAppBot:
                 else "Disabled (On-Demand only ⚡)"
             )
 
+            # Compute disk usage of stored media files
+            stored_mb = 0.0
+            if Config.DOWNLOADS_DIR.exists():
+                try:
+                    stored_bytes = sum(f.stat().st_size for f in Config.DOWNLOADS_DIR.glob("*") if f.is_file())
+                    stored_mb = round(stored_bytes / (1024 * 1024), 2)
+                except Exception:
+                    pass
+
+            stored_count = stats.get("total_stored_media", 0)
+            storage_state = (
+                f"Active 🟢 ({stored_count} files, {stored_mb} MB stored on disk)"
+                if Config.ENABLE_MEDIA_STORAGE
+                else "Disabled"
+            )
+
             reply = (
                 "📊 *WAmate Second Brain Status*\n\n"
                 f"• *Messages Synced:* {stats['total_messages']:,}\n"
                 f"• *Contacts & Groups:* {stats['total_contacts']:,} ({stats['total_groups']} groups)\n"
                 f"• *History Date Range:* {stats['oldest_date']} → {stats['newest_date']}\n"
+                f"• *Stored Media (30-day safe 💾):* {storage_state}\n"
                 f"• *OCR Cached Media:* {stats['total_ocr_cached']}\n"
                 f"• *Idle OCR Worker:* {idle_state}\n"
                 f"• *Database Size:* {stats['db_size_mb']} MB\n"
@@ -637,9 +674,17 @@ class WhatsAppBot:
             elif "video" in mimetype.lower():
                 safe_filename += ".mp4"
 
+        # Check if already downloaded locally
+        if row.get("local_path") and not str(row["local_path"]).startswith("["):
+            lp = Path(str(row["local_path"]))
+            if lp.exists() and lp.stat().st_size > 0:
+                return str(lp), filename, mimetype, None
+
         file_path = downloads_dir / f"{msg_id}_{safe_filename}"
 
         if file_path.exists() and file_path.stat().st_size > 0:
+            if not row.get("local_path"):
+                self.db.update_message_local_path(msg_id, str(file_path))
             return str(file_path), filename, mimetype, None
 
         if not raw_blob:
@@ -656,14 +701,19 @@ class WhatsAppBot:
             msg.ParseFromString(raw_blob)
             binary_data = self.client.download_any(msg)
             if not binary_data:
+                self.db.update_message_local_path(msg_id, "[EXPIRED_ON_WHATSAPP]")
                 return None, filename, mimetype, "WhatsApp download returned empty data (media link may have expired on servers)."
 
             with open(file_path, "wb") as f:
                 f.write(binary_data)
 
+            self.db.update_message_local_path(msg_id, str(file_path))
             logger.info("Successfully downloaded media file: %s (%d bytes)", file_path, len(binary_data))
             return str(file_path), filename, mimetype, None
         except Exception as e:
+            err_str = str(e).lower()
+            if any(k in err_str for k in ("410", "expired", "gone", "not found")):
+                self.db.update_message_local_path(msg_id, "[EXPIRED_ON_WHATSAPP]")
             logger.exception("Failed to download media for message %s: %s", msg_id, e)
             return None, filename, mimetype, f"WhatsApp download failed: {str(e)}"
 
@@ -969,6 +1019,129 @@ class WhatsAppBot:
 
         return "Found matching images, but could not download them from WhatsApp servers (links may have expired)."
 
+    def _auto_download_media_task(self, msg_id: str) -> None:
+        """Background worker task to immediately pre-download an incoming media file while link is fresh."""
+        try:
+            file_path, filename, mimetype, err = self.download_media_by_id(msg_id)
+            if file_path and not err:
+                self._storage_worker_stats["stored"] += 1
+                self._storage_worker_stats["last_active"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                size_kb = round(os.path.getsize(file_path) / 1024, 1) if os.path.exists(file_path) else 0
+                logger.info("Real-Time Media Storage: Auto-downloaded '%s' (%s KB, msg: %s) [30-day protected].", filename, size_kb, msg_id)
+        except Exception as e:
+            logger.debug("Real-Time Media Storage error for %s: %s", msg_id, e)
+
+    def _start_media_storage_worker(self) -> None:
+        """Launch the background media storage worker thread if enabled (Zero Gemini API Cost)."""
+        if not Config.ENABLE_MEDIA_STORAGE:
+            logger.info("Media Storage Worker is disabled (ENABLE_MEDIA_STORAGE=false).")
+            return
+
+        if self._media_storage_thread and self._media_storage_thread.is_alive():
+            return
+
+        self._stop_worker_event.clear()
+        self._media_storage_thread = threading.Thread(
+            target=self._media_storage_worker, daemon=True, name="MediaStorageWorker"
+        )
+        self._media_storage_thread.start()
+        logger.info(
+            "Media Storage Worker started (lookback: %dd, max size: %dMB, delay: %.1fs). "
+            "Pre-downloads raw media to disk with 0 Gemini API calls so files remain accessible forever after 30 days.",
+            Config.MEDIA_STORAGE_LOOKBACK_DAYS,
+            Config.MEDIA_STORAGE_MAX_SIZE_MB,
+            Config.MEDIA_STORAGE_DELAY_SECONDS,
+        )
+
+    def _media_storage_worker(self) -> None:
+        """Background thread that pre-downloads and stores raw media files to disk while idle.
+        Uses ZERO Gemini API calls! Permanently protects media from WhatsApp's 30-day CDN link expiration.
+        """
+        logger.info("Media Storage Worker active. Waiting 15s for connection warmup...")
+        if self._stop_worker_event.wait(15.0):
+            return
+
+        types_tuple = tuple(t.strip() for t in Config.MEDIA_STORAGE_TYPES.split(",") if t.strip())
+        max_bytes = Config.MEDIA_STORAGE_MAX_SIZE_MB * 1024 * 1024
+
+        while not self._stop_worker_event.is_set():
+            if not getattr(self.client, "is_connected", False):
+                if self._stop_worker_event.wait(5.0):
+                    break
+                continue
+
+            # If user is currently querying self-chat, pause and yield
+            if self._user_active_event.is_set():
+                if self._stop_worker_event.wait(3.0):
+                    break
+                continue
+
+            try:
+                candidates = self.db.get_unstored_media_candidates(
+                    lookback_days=Config.MEDIA_STORAGE_LOOKBACK_DAYS,
+                    limit=50,
+                    media_types=types_tuple,
+                    max_size_bytes=max_bytes,
+                    include_statuses=Config.MEDIA_STORAGE_INCLUDE_STATUSES,
+                    self_jid=self.my_canonical_jid or "",
+                )
+            except Exception as e:
+                logger.warning("Media Storage Worker: error querying candidates: %s", e)
+                candidates = []
+
+            if not candidates:
+                # No candidates to store; wait 60s before checking again
+                if self._stop_worker_event.wait(60.0):
+                    break
+                continue
+
+            logger.info(
+                "Media Storage Worker: found %d unstored media item(s) from past %d days.",
+                len(candidates),
+                Config.MEDIA_STORAGE_LOOKBACK_DAYS,
+            )
+
+            for item in candidates:
+                if self._stop_worker_event.is_set():
+                    break
+
+                # If user starts querying, pause immediately
+                while self._user_active_event.is_set():
+                    if self._stop_worker_event.wait(3.0):
+                        break
+
+                if self._stop_worker_event.is_set():
+                    break
+
+                msg_id = item["id"]
+                chat_name = item.get("chat_name") or item.get("chat_jid") or "Unknown"
+                media_type = item.get("media_type") or "media"
+                filename = item.get("media_filename") or msg_id
+
+                file_path, real_filename, mimetype, err = self.download_media_by_id(msg_id)
+                if file_path and not err:
+                    self._storage_worker_stats["stored"] += 1
+                    self._storage_worker_stats["last_active"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    size_kb = round(os.path.getsize(file_path) / 1024, 1) if os.path.exists(file_path) else 0
+                    logger.info(
+                        "Media Storage: Saved %s '%s' (%s KB) locally from '%s' [30-day protected].",
+                        media_type,
+                        real_filename or filename,
+                        size_kb,
+                        chat_name,
+                    )
+                else:
+                    self._storage_worker_stats["failed_or_expired"] += 1
+                    logger.debug("Media Storage: Skipping un-downloadable %s %s (%s)", media_type, msg_id, err)
+
+                # Gentle delay to avoid socket congestion
+                if self._stop_worker_event.wait(Config.MEDIA_STORAGE_DELAY_SECONDS):
+                    break
+
+            # Sleep 30 seconds between candidate batches
+            if self._stop_worker_event.wait(30.0):
+                break
+
     def _start_idle_ocr_worker(self) -> None:
         """Launch the background idle OCR worker thread if enabled."""
         if not Config.ENABLE_IDLE_OCR:
@@ -1169,8 +1342,14 @@ class WhatsAppBot:
         """Stop background workers and disconnect the WhatsApp client."""
         logger.info("Stopping WhatsApp bot and background workers...")
         self._stop_worker_event.set()
+        if self._media_storage_thread and self._media_storage_thread.is_alive():
+            self._media_storage_thread.join(timeout=2.0)
         if self._idle_worker_thread and self._idle_worker_thread.is_alive():
             self._idle_worker_thread.join(timeout=2.0)
+        try:
+            self._media_executor.shutdown(wait=False)
+        except Exception:
+            pass
         try:
             if hasattr(self, "client") and self.client.is_connected:
                 self.client.disconnect()
@@ -1200,7 +1379,10 @@ class WhatsAppBot:
             except Exception as e:
                 logger.error("Failed to generate pairing code: %s. Falling back to QR code...", e)
 
-        # Launch idle background OCR pre-caching worker
+        # Launch media storage pre-download worker (Zero Gemini API Cost - keeps media accessible after 30 days)
+        self._start_media_storage_worker()
+
+        # Launch idle background OCR pre-caching worker (if manually enabled)
         self._start_idle_ocr_worker()
 
         logger.info("Starting WhatsApp client connection...")
@@ -1210,6 +1392,8 @@ class WhatsAppBot:
         """Unlink the WhatsApp account, remove session credentials, and optionally delete all saved messages/data."""
         logger.info("Unlinking WhatsApp account (delete_data=%s)...", delete_data)
         self._stop_worker_event.set()
+        if self._media_storage_thread and self._media_storage_thread.is_alive():
+            self._media_storage_thread.join(timeout=2.0)
         if self._idle_worker_thread and self._idle_worker_thread.is_alive():
             self._idle_worker_thread.join(timeout=2.0)
 

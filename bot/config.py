@@ -25,6 +25,16 @@ class Config:
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()
     TZ: str = os.getenv("TZ", "Asia/Kolkata").strip()
 
+    # Media Storage & Auto-Download Configuration (Zero Gemini API Cost)
+    # Pre-downloads and stores media files locally while fresh so they remain permanently accessible
+    # even after WhatsApp's 30-day CDN link expiration. OCR is executed strictly on-demand.
+    ENABLE_MEDIA_STORAGE: bool = os.getenv("ENABLE_MEDIA_STORAGE", "true").lower() in ("true", "1", "yes")
+    MEDIA_STORAGE_LOOKBACK_DAYS: int = int(os.getenv("MEDIA_STORAGE_LOOKBACK_DAYS", "30"))
+    MEDIA_STORAGE_MAX_SIZE_MB: int = int(os.getenv("MEDIA_STORAGE_MAX_SIZE_MB", "25"))
+    MEDIA_STORAGE_TYPES: str = os.getenv("MEDIA_STORAGE_TYPES", "image,document,audio,voice_note").lower()
+    MEDIA_STORAGE_INCLUDE_STATUSES: bool = os.getenv("MEDIA_STORAGE_INCLUDE_STATUSES", "false").lower() in ("true", "1", "yes")
+    MEDIA_STORAGE_DELAY_SECONDS: float = float(os.getenv("MEDIA_STORAGE_DELAY_SECONDS", "2.0"))
+
     # Idle Background OCR Configuration (Disabled by default to preserve free-tier Gemini API quota)
     ENABLE_IDLE_OCR: bool = os.getenv("ENABLE_IDLE_OCR", "false").lower() in ("true", "1", "yes")
     IDLE_OCR_LOOKBACK_HOURS: int = int(os.getenv("IDLE_OCR_LOOKBACK_HOURS", "48"))

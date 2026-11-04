@@ -87,6 +87,7 @@ class DatabaseManager:
                 ("media_size", "INTEGER DEFAULT 0"),
                 ("media_metadata", "TEXT DEFAULT '{}'"),
                 ("raw_message", "BLOB"),
+                ("local_path", "TEXT"),
             ]:
                 if col_name not in existing_cols:
                     conn.execute(f"ALTER TABLE messages ADD COLUMN {col_name} {col_type};")
@@ -96,6 +97,7 @@ class DatabaseManager:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_sender ON messages(sender_jid);")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_media_type ON messages(media_type);")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_media_filename ON messages(media_filename);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_local_path ON messages(local_path);")
 
             # 3. Full-Text Search Virtual Table (FTS5)
             conn.execute(
@@ -152,6 +154,28 @@ class DatabaseManager:
 
             conn.commit()
             logger.info("Database initialized successfully at %s", self.db_path)
+
+        downloads_dir = Path(self.db_path).parent / "downloads"
+        if downloads_dir.exists():
+            self.reconcile_stored_downloads(downloads_dir)
+
+    def reconcile_stored_downloads(self, downloads_dir: Path) -> int:
+        """Scan downloads_dir and record local_path for any previously downloaded files."""
+        if not downloads_dir.exists():
+            return 0
+        updated = 0
+        with self._get_connection() as conn:
+            for p in downloads_dir.glob("*"):
+                if p.is_file() and "_" in p.name:
+                    msg_id = p.name.split("_", 1)[0]
+                    if len(msg_id) >= 16:
+                        cur = conn.execute(
+                            "UPDATE messages SET local_path = ? WHERE id = ? AND (local_path IS NULL OR local_path = '')",
+                            (str(p), msg_id),
+                        )
+                        updated += cur.rowcount
+            conn.commit()
+        return updated
 
     def upsert_contact(
         self,
@@ -323,6 +347,51 @@ class DatabaseManager:
         """
         with self._get_connection() as conn:
             rows = conn.execute(sql, (cutoff_ts, self_jid, self_jid, limit)).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_unstored_media_candidates(
+        self,
+        lookback_days: int = 30,
+        limit: int = 50,
+        media_types: tuple[str, ...] = ("image", "document", "audio", "voice_note"),
+        max_size_bytes: int = 25 * 1024 * 1024,
+        include_statuses: bool = False,
+        self_jid: str = "",
+    ) -> list[dict[str, Any]]:
+        """Fetch media messages within lookback_days that are not yet downloaded locally, prioritizing:
+        1. Self-chat messages / notes to self
+        2. Direct 1-on-1 Messages (DMs with contacts or unsaved numbers)
+        3. Group chats & Announcements
+        4. WhatsApp Status Stories (only if include_statuses is True)
+        """
+        cutoff_ts = int(time.time()) - (lookback_days * 86400)
+        status_filter = "" if include_statuses else "AND m.chat_jid != 'status@broadcast'"
+        placeholders = ",".join("?" for _ in media_types)
+        sql = f"""
+        SELECT m.id, m.chat_jid, m.sender_jid, m.timestamp, m.text, 
+               m.media_type, m.media_filename, m.media_mimetype, m.media_size,
+               m.chat_name, m.sender_name, m.is_group
+        FROM messages m
+        WHERE (m.local_path IS NULL OR m.local_path = '')
+          AND m.media_type IN ({placeholders})
+          AND m.timestamp >= ?
+          AND m.raw_message IS NOT NULL
+          AND (m.media_size <= ? OR m.media_size IS NULL OR m.media_size = 0)
+          {status_filter}
+        ORDER BY 
+          CASE 
+            WHEN m.chat_jid = ? OR m.sender_jid = ? THEN 1             -- Self-chat
+            WHEN m.is_group = 0 AND m.chat_jid != 'status@broadcast' THEN 2 -- Direct 1-on-1 DMs
+            WHEN m.is_group = 1 THEN 3                                 -- Group chats
+            WHEN m.chat_jid = 'status@broadcast' THEN 4                -- Status stories
+            ELSE 5
+          END ASC,
+          m.timestamp DESC
+        LIMIT ?
+        """
+        params = list(media_types) + [cutoff_ts, max_size_bytes, self_jid, self_jid, limit]
+        with self._get_connection() as conn:
+            rows = conn.execute(sql, params).fetchall()
             return [dict(r) for r in rows]
 
     def get_ocr_stats(self) -> dict[str, int]:
@@ -563,7 +632,7 @@ class DatabaseManager:
         """Fetch raw message blob and metadata for downloading media content."""
         sql = """
         SELECT id, chat_jid, chat_name, sender_jid, sender_name, text, timestamp,
-               media_type, media_filename, media_mimetype, media_size, media_metadata, raw_message
+               media_type, media_filename, media_mimetype, media_size, media_metadata, raw_message, local_path
         FROM messages
         WHERE id = ?
         """
@@ -585,7 +654,14 @@ class DatabaseManager:
                 "size": row["media_size"],
                 "metadata": row["media_metadata"],
                 "raw_message": row["raw_message"],
+                "local_path": row["local_path"] if "local_path" in row.keys() else None,
             }
+
+    def update_message_local_path(self, msg_id: str, local_path: str) -> None:
+        """Update the stored local filesystem path for a downloaded media message."""
+        with self._get_connection() as conn:
+            conn.execute("UPDATE messages SET local_path = ? WHERE id = ?", (local_path, msg_id))
+            conn.commit()
 
     # -------------------------------------------------------------
     # Gemini Tool Helper Methods
@@ -1173,6 +1249,14 @@ class DatabaseManager:
             except Exception:
                 pass
 
+            total_stored_media = 0
+            try:
+                total_stored_media = cursor.execute(
+                    "SELECT COUNT(*) FROM messages WHERE local_path IS NOT NULL AND local_path NOT LIKE '[%'"
+                ).fetchone()[0]
+            except Exception:
+                pass
+
             oldest_ts = cursor.execute("SELECT MIN(timestamp) FROM messages WHERE timestamp > 0").fetchone()[0]
             newest_ts = cursor.execute("SELECT MAX(timestamp) FROM messages WHERE timestamp > 0").fetchone()[0]
 
@@ -1185,6 +1269,7 @@ class DatabaseManager:
                 "total_contacts": total_contacts,
                 "total_groups": total_groups,
                 "total_ocr_cached": total_ocr,
+                "total_stored_media": total_stored_media,
                 "oldest_timestamp": oldest_ts,
                 "newest_timestamp": newest_ts,
                 "oldest_date": _format_timestamp(oldest_ts) if oldest_ts else "N/A",
