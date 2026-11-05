@@ -131,7 +131,7 @@ class DatabaseManager:
             )
             conn.execute(
                 """
-                CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE ON messages BEGIN
+                CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE OF text, chat_name, sender_name ON messages BEGIN
                     INSERT INTO messages_fts(messages_fts, rowid, text, chat_name, sender_name)
                     VALUES ('delete', old.rowid, old.text, old.chat_name, old.sender_name);
                     INSERT INTO messages_fts(rowid, text, chat_name, sender_name)
@@ -160,20 +160,41 @@ class DatabaseManager:
             self.reconcile_stored_downloads(downloads_dir)
 
     def reconcile_stored_downloads(self, downloads_dir: Path) -> int:
-        """Scan downloads_dir and record local_path for any previously downloaded files."""
-        if not downloads_dir.exists():
-            return 0
+        """Scan downloads_dir and record local_path for any previously downloaded files,
+        and clean up non-attachment and expired status records so they are never queried repeatedly.
+        """
         updated = 0
         with self._get_connection() as conn:
-            for p in downloads_dir.glob("*"):
-                if p.is_file() and "_" in p.name:
-                    msg_id = p.name.split("_", 1)[0]
-                    if len(msg_id) >= 16:
-                        cur = conn.execute(
-                            "UPDATE messages SET local_path = ? WHERE id = ? AND (local_path IS NULL OR local_path = '')",
-                            (str(p), msg_id),
-                        )
-                        updated += cur.rowcount
+            # 1. Reconcile existing files on disk
+            if downloads_dir.exists():
+                for p in downloads_dir.glob("*"):
+                    if p.is_file() and "_" in p.name:
+                        msg_id = p.name.split("_", 1)[0]
+                        if len(msg_id) >= 16:
+                            cur = conn.execute(
+                                "UPDATE messages SET local_path = ? WHERE id = ? AND (local_path IS NULL OR local_path = '')",
+                                (str(p), msg_id),
+                            )
+                            updated += cur.rowcount
+
+            # 2. Mark non-attachment messages (text, contact cards, polls, locations) as non-downloadable
+            conn.execute("""
+                UPDATE messages 
+                SET local_path = '[NO_ATTACHMENT]' 
+                WHERE media_type IN ('text', 'contact', 'poll', 'location', 'link') 
+                  AND (local_path IS NULL OR local_path = '')
+            """)
+
+            # 3. Mark historical WhatsApp status updates older than 24 hours as expired
+            status_cutoff = int(time.time()) - 86400
+            conn.execute("""
+                UPDATE messages 
+                SET local_path = '[STATUS_EXPIRED_24H]' 
+                WHERE chat_jid = 'status@broadcast' 
+                  AND (local_path IS NULL OR local_path = '') 
+                  AND timestamp < ?
+            """, (status_cutoff,))
+
             conn.commit()
         return updated
 
@@ -362,14 +383,27 @@ class DatabaseManager:
         1. Self-chat messages / notes to self
         2. Direct 1-on-1 Messages (DMs with contacts or unsaved numbers)
         3. Group chats & Announcements
-        4. WhatsApp Status Stories (processed after chats, if include_statuses is True)
+        4. WhatsApp Status Stories (only if <= 24h old, processed last)
         """
-        cutoff_ts = int(time.time()) - (lookback_days * 86400)
-        status_filter = "" if include_statuses else "AND m.chat_jid != 'status@broadcast'"
+        now_ts = int(time.time())
+        cutoff_ts = now_ts - (lookback_days * 86400)
 
-        # If media_types is "all" or empty, match all non-text media messages
+        # Status updates expire from WhatsApp CDN in 24 hours. Never attempt statuses older than 24h.
+        status_24h_cutoff = now_ts - 86400
+        status_filter = (
+            f"AND (m.chat_jid != 'status@broadcast' OR m.timestamp >= {status_24h_cutoff})"
+            if include_statuses
+            else "AND m.chat_jid != 'status@broadcast'"
+        )
+
+        # Downloadable attachment types ONLY (excludes text, contact, poll, location, link)
+        VALID_ATTACHMENT_TYPES = ("image", "video", "document", "audio", "voice_note", "sticker")
         is_all_types = not media_types or "all" in media_types or "any" in media_types
-        type_filter = "AND m.media_type != 'text'" if is_all_types else f"AND m.media_type IN ({','.join('?' for _ in media_types)})"
+        selected_types = list(VALID_ATTACHMENT_TYPES) if is_all_types else [t for t in media_types if t in VALID_ATTACHMENT_TYPES]
+        if not selected_types:
+            selected_types = list(VALID_ATTACHMENT_TYPES)
+
+        type_filter = f"AND m.media_type IN ({','.join('?' for _ in selected_types)})"
 
         # If max_size_bytes <= 0, no size restriction
         size_filter = "" if max_size_bytes <= 0 else "AND (m.media_size <= ? OR m.media_size IS NULL OR m.media_size = 0)"
@@ -396,9 +430,7 @@ class DatabaseManager:
           m.timestamp DESC
         LIMIT ?
         """
-        params = []
-        if not is_all_types:
-            params.extend(media_types)
+        params = list(selected_types)
         params.append(cutoff_ts)
         if max_size_bytes > 0:
             params.append(max_size_bytes)

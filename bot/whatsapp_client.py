@@ -704,6 +704,17 @@ class WhatsAppBot:
         try:
             msg = Message()
             msg.ParseFromString(raw_blob)
+
+            # Check if this protobuf message actually contains any media attachment
+            attachment_fields = [
+                "imageMessage", "documentMessage", "videoMessage", "audioMessage",
+                "stickerMessage", "documentWithCaptionMessage"
+            ]
+            has_attachment = any(msg.HasField(f) for f in attachment_fields if hasattr(msg, "HasField"))
+            if not has_attachment:
+                self.db.update_message_local_path(msg_id, "[NO_ATTACHMENT]")
+                return None, filename, mimetype, "No media attachment found in message payload."
+
             binary_data = self.client.download_any(msg)
             if not binary_data:
                 self.db.update_message_local_path(msg_id, "[EXPIRED_ON_WHATSAPP]")
@@ -716,11 +727,11 @@ class WhatsAppBot:
             logger.info("Successfully downloaded media file: %s (%d bytes)", file_path, len(binary_data))
             return str(file_path), filename, mimetype, None
         except Exception as e:
-            err_str = str(e).lower()
-            if any(k in err_str for k in ("410", "expired", "gone", "not found")):
-                self.db.update_message_local_path(msg_id, "[EXPIRED_ON_WHATSAPP]")
-            logger.exception("Failed to download media for message %s: %s", msg_id, e)
-            return None, filename, mimetype, f"WhatsApp download failed: {str(e)}"
+            err_str = str(e).strip()
+            # Mark ALL download failures in database so it NEVER endlessly retries dead links
+            self.db.update_message_local_path(msg_id, f"[DOWNLOAD_FAILED: {err_str[:40]}]")
+            logger.debug("Media download failed for message %s: %s", msg_id, err_str)
+            return None, filename, mimetype, f"WhatsApp download failed: {err_str}"
 
     def send_document_by_query(self, query: str, target_jid: Any = None, max_count: int = 1) -> str:
         """Find matching document(s), download them, and send the actual file(s) directly into self-chat.
