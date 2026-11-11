@@ -76,7 +76,10 @@ def _build_html_page(has_ai: bool) -> str:
     --bubble-me: #005c4b;
     --bubble-them: #202c33;
   }}
-  * {{ box-sizing: border-box; }}
+  * {{ box-sizing: border-box; scrollbar-width: thin; scrollbar-color: #2f414b transparent; }}
+  ::-webkit-scrollbar {{ width: 8px; height: 8px; }}
+  ::-webkit-scrollbar-thumb {{ background: #2f414b; border-radius: 999px; }}
+  ::-webkit-scrollbar-track {{ background: transparent; }}
   body {{
     margin: 0;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
@@ -87,13 +90,13 @@ def _build_html_page(has_ai: bool) -> str:
     flex-direction: column;
   }}
   header {{
-    background: var(--panel);
+    background: linear-gradient(180deg, #132027 0%, var(--panel) 100%);
     border-bottom: 1px solid var(--border);
-    padding: 10px 18px;
+    padding: 11px 18px;
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 14px;
+    gap: 12px;
     justify-content: space-between;
   }}
   .brand {{
@@ -111,13 +114,13 @@ def _build_html_page(has_ai: bool) -> str:
   .stats-strip {{
     display: flex;
     flex-wrap: wrap;
-    gap: 8px;
-    font-size: 0.78rem;
+    gap: 7px;
+    font-size: 0.77rem;
   }}
   .stat-pill {{
-    background: var(--card);
+    background: rgba(32,44,51,0.88);
     border: 1px solid var(--border);
-    padding: 4px 9px;
+    padding: 4px 10px;
     border-radius: 999px;
     color: var(--text);
     white-space: nowrap;
@@ -141,6 +144,7 @@ def _build_html_page(has_ai: bool) -> str:
     cursor: pointer;
     font-weight: 600;
     white-space: nowrap;
+    transition: color 0.15s ease, border-color 0.15s ease;
   }}
   .tab-btn:hover {{ color: var(--text); }}
   .tab-btn.active {{
@@ -160,84 +164,134 @@ def _build_html_page(has_ai: bool) -> str:
   }}
   .panel.active {{ display: block; }}
   .toolbar {{
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 11px;
+    padding: 10px 12px;
     display: flex;
     flex-wrap: wrap;
-    gap: 10px;
+    gap: 9px;
     margin-bottom: 14px;
     align-items: center;
   }}
-  input[type="text"], select {{
+  input[type="text"], input[type="search"], select {{
     background: var(--card);
     border: 1px solid var(--border);
     color: var(--text);
-    padding: 9px 12px;
+    padding: 8px 11px;
     border-radius: 8px;
-    font-size: 0.92rem;
+    font-size: 0.9rem;
     outline: none;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
   }}
-  input[type="text"]:focus, select:focus {{ border-color: var(--accent); }}
-  .grow {{ flex: 1; min-width: 200px; }}
+  input[type="text"]:focus, input[type="search"]:focus, select:focus {{
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px var(--accent-dim);
+  }}
+  .grow {{ flex: 1; min-width: 190px; }}
+  .chat-filter-box {{ min-width: 195px; flex: 0.75; max-width: 280px; }}
   button.primary-btn {{
     background: var(--accent);
     color: #06211c;
     border: none;
-    padding: 9px 16px;
+    padding: 8px 15px;
     border-radius: 8px;
     font-weight: 700;
     cursor: pointer;
-    font-size: 0.9rem;
+    font-size: 0.89rem;
+    transition: filter 0.15s ease;
   }}
   button.primary-btn:hover {{ filter: brightness(1.08); }}
-  button.ghost-btn {{
+  button.ghost-btn, a.ghost-btn {{
     background: var(--card);
     color: var(--text);
     border: 1px solid var(--border);
     padding: 6px 11px;
     border-radius: 7px;
     cursor: pointer;
-    font-size: 0.82rem;
+    font-size: 0.81rem;
     text-decoration: none;
     display: inline-flex;
     align-items: center;
     gap: 4px;
+    transition: background 0.15s ease, border-color 0.15s ease;
   }}
-  button.ghost-btn:hover, a.ghost-btn:hover {{ background: var(--card-hover); }}
-  a.ghost-btn {{
+  button.ghost-btn:hover, a.ghost-btn:hover {{ background: var(--card-hover); border-color: #3a4f5a; }}
+  button.link-pill {{
+    background: var(--accent-dim);
+    color: #7ee8cf;
+    border: 1px solid rgba(0,168,132,0.32);
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 0.74rem;
+    cursor: pointer;
+    font-weight: 600;
+    transition: filter 0.15s ease;
+  }}
+  button.link-pill:hover {{ filter: brightness(1.15); }}
+  .scope-pills {{
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 5px;
+  }}
+  .scope-btn {{
     background: var(--card);
-    color: var(--text);
+    color: var(--muted);
     border: 1px solid var(--border);
-    padding: 6px 11px;
+    padding: 5px 8px;
     border-radius: 7px;
-    font-size: 0.82rem;
-    text-decoration: none;
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
+    font-size: 0.77rem;
+    font-weight: 600;
+    cursor: pointer;
+    text-align: center;
+  }}
+  .scope-btn.active {{
+    background: var(--accent-dim);
+    color: var(--accent);
+    border-color: rgba(0,168,132,0.45);
+  }}
+  .phone-tag {{
+    color: var(--muted);
+    font-size: 0.74rem;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }}
+  .empty-state {{
+    background: var(--panel);
+    border: 1px dashed var(--border);
+    border-radius: 12px;
+    padding: 28px 18px;
+    text-align: center;
+    color: var(--muted);
+    font-size: 0.9rem;
   }}
   label.check {{
     display: inline-flex;
     align-items: center;
     gap: 6px;
     color: var(--muted);
-    font-size: 0.85rem;
+    font-size: 0.84rem;
     cursor: pointer;
+    white-space: nowrap;
   }}
   .results-list {{
     display: flex;
     flex-direction: column;
     gap: 10px;
-    max-width: 1100px;
+    max-width: 1120px;
   }}
   .msg-card {{
     background: var(--panel);
     border: 1px solid var(--border);
     border-radius: 10px;
     padding: 12px 14px;
+    transition: border-color 0.15s ease;
   }}
+  .msg-card:hover {{ border-color: #394b56; }}
   .msg-meta {{
     display: flex;
     flex-wrap: wrap;
     justify-content: space-between;
+    align-items: center;
     gap: 8px;
     margin-bottom: 6px;
     font-size: 0.82rem;
@@ -299,6 +353,8 @@ def _build_html_page(has_ai: bool) -> str:
   }}
   @media (max-width: 800px) {{
     .chats-layout {{ grid-template-columns: 1fr; height: auto; }}
+    .chat-sidebar {{ max-height: 280px; }}
+    .chat-view {{ min-height: 420px; }}
   }}
   .chat-sidebar {{
     background: var(--panel);
@@ -403,6 +459,11 @@ def _build_html_page(has_ai: bool) -> str:
     overflow: hidden;
     display: flex;
     flex-direction: column;
+    transition: transform 0.14s ease, border-color 0.14s ease;
+  }}
+  .media-tile:hover {{
+    transform: translateY(-2px);
+    border-color: rgba(0,168,132,0.52);
   }}
   .media-tile-preview {{
     height: 150px;
@@ -564,11 +625,18 @@ def _build_html_page(has_ai: bool) -> str:
   {ai_tab_btn}
 </nav>
 <main>
+  <datalist id="chatSuggestList"></datalist>
+
   <!-- Search Panel -->
   <section id="tab-search" class="panel active">
     <div class="toolbar">
-      <input id="searchQuery" class="grow" type="text" placeholder="Search messages, OCR text, documents, links, voice transcripts..." />
-      <input id="searchChat" type="text" placeholder="Filter chat / contact" />
+      <input id="searchQuery" class="grow" type="search" placeholder="Search messages, OCR text, documents, links, voice transcripts... (Press /)" />
+      <input id="searchChat" class="chat-filter-box" list="chatSuggestList" type="search" placeholder="Chat name or phone (+91...)" />
+      <select id="searchScope" title="Chat Scope">
+        <option value="all">All Chats</option>
+        <option value="dm">1-on-1 DMs</option>
+        <option value="group">Groups Only</option>
+      </select>
       <select id="searchType">
         <option value="all">All Types</option>
         <option value="image">Photos / Images</option>
@@ -582,6 +650,7 @@ def _build_html_page(has_ai: bool) -> str:
       </select>
       <label class="check"><input id="searchStatuses" type="checkbox" /> Include Statuses</label>
       <button id="searchBtn" class="primary-btn">Search</button>
+      <button id="searchClearBtn" class="ghost-btn" title="Reset Search Filters">Clear</button>
     </div>
     <div id="searchResults" class="results-list"></div>
     <div class="load-more-wrap"><button id="searchMoreBtn" class="ghost-btn" style="display:none">Load More</button></div>
@@ -592,18 +661,30 @@ def _build_html_page(has_ai: bool) -> str:
     <div class="chats-layout">
       <div class="chat-sidebar">
         <div class="chat-sidebar-top">
-          <input id="chatFilterInput" type="text" placeholder="Filter chats or contacts..." />
+          <input id="chatFilterInput" type="search" placeholder="Filter chat name or phone (+91...)" />
+          <div class="scope-pills" id="chatScopePills">
+            <button type="button" class="scope-btn active" data-scope="all">All</button>
+            <button type="button" class="scope-btn" data-scope="dm">1-on-1 DMs</button>
+            <button type="button" class="scope-btn" data-scope="group">Groups</button>
+          </div>
           <label class="check"><input id="chatIncludeStatuses" type="checkbox" /> Show Status Broadcasts</label>
         </div>
         <div id="chatList" class="chat-list"></div>
       </div>
       <div class="chat-view">
         <div class="chat-view-header">
-          <span id="activeChatTitle">Select a chat from the left</span>
-          <button id="loadOlderBtn" class="ghost-btn" style="display:none">Load Older Messages</button>
+          <div style="min-width:0">
+            <div id="activeChatTitle">Select a chat from the left</div>
+            <div id="activeChatSub" class="phone-tag"></div>
+          </div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap">
+            <button id="chatSearchJumpBtn" class="ghost-btn" style="display:none">🔍 Search Chat</button>
+            <button id="chatMediaJumpBtn" class="ghost-btn" style="display:none">🖼️ Media</button>
+            <button id="loadOlderBtn" class="ghost-btn" style="display:none">Load Older</button>
+          </div>
         </div>
         <div id="chatMessages" class="chat-messages">
-          <div class="muted">Click any conversation to inspect message history, saved media &amp; cached AI/OCR text.</div>
+          <div class="empty-state">Click any conversation to inspect message history, phone numbers, saved media &amp; cached AI/OCR text.</div>
         </div>
       </div>
     </div>
@@ -621,8 +702,16 @@ def _build_html_page(has_ai: bool) -> str:
         <option value="status">Status Updates</option>
         <option value="sticker">Stickers</option>
       </select>
-      <input id="mediaQuery" class="grow" type="text" placeholder="Filter by filename, caption, OCR or chat..." />
-      <button id="mediaSearchBtn" class="primary-btn">Refresh</button>
+      <input id="mediaChat" class="chat-filter-box" list="chatSuggestList" type="search" placeholder="Chat name or phone (+91...)" />
+      <select id="mediaScope" title="Chat Scope">
+        <option value="all">All Chats</option>
+        <option value="dm">1-on-1 DMs</option>
+        <option value="group">Groups Only</option>
+      </select>
+      <input id="mediaQuery" class="grow" type="search" placeholder="Filter by filename, caption or OCR text..." />
+      <label class="check"><input id="mediaStatuses" type="checkbox" checked /> Include Statuses</label>
+      <button id="mediaSearchBtn" class="primary-btn">Apply</button>
+      <button id="mediaClearBtn" class="ghost-btn" title="Reset Media Filters">Clear</button>
     </div>
     <div id="mediaGrid" class="media-grid"></div>
     <div class="load-more-wrap"><button id="mediaMoreBtn" class="ghost-btn" style="display:none">Load More</button></div>
@@ -636,8 +725,14 @@ def _build_html_page(has_ai: bool) -> str:
         <option value="deleted">Deleted for Everyone Only</option>
         <option value="edited">Edited Messages Only</option>
       </select>
-      <input id="vaultQuery" class="grow" type="text" placeholder="Filter by contact or group name..." />
+      <input id="vaultQuery" class="grow" list="chatSuggestList" type="search" placeholder="Filter by contact, group or phone number (+91...)" />
+      <select id="vaultScope" title="Chat Scope">
+        <option value="all">All Chats</option>
+        <option value="dm">1-on-1 DMs</option>
+        <option value="group">Groups Only</option>
+      </select>
       <button id="vaultRefreshBtn" class="primary-btn">Refresh Vault</button>
+      <button id="vaultClearBtn" class="ghost-btn" title="Reset Vault Filters">Clear</button>
     </div>
     <div id="vaultResults" class="results-list"></div>
   </section>
@@ -666,23 +761,70 @@ const fmtBytes = (b) => {{
   return `${{v.toFixed(i === 0 ? 0 : 1)}} ${{u[i]}}`;
 }};
 
+const fmtPhone = (p) => p ? `+${{String(p).replace(/^\\+/, '')}}` : '';
+
+function debounce(fn, ms=220) {{
+  let timer = null;
+  return (...args) => {{
+    clearTimeout(timer);
+    timer = setTimeout(() => fn(...args), ms);
+  }};
+}}
+
 async function apiGet(url) {{
   const res = await fetch(url);
   if (!res.ok) throw new Error(`HTTP ${{res.status}}`);
   return res.json();
 }}
 
-// Tabs
-document.querySelectorAll('.tab-btn').forEach(btn => {{
-  btn.addEventListener('click', () => {{
-    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
-    btn.classList.add('active');
-    document.getElementById(`tab-${{btn.dataset.tab}}`).classList.add('active');
-    if (btn.dataset.tab === 'chats' && !window._chatsLoaded) loadChats();
-    if (btn.dataset.tab === 'media' && !window._mediaLoaded) loadMedia(true);
-    if (btn.dataset.tab === 'vault' && !window._vaultLoaded) loadVault();
-  }});
+// Tabs & Cross-Tab Navigation
+function switchTab(tabName, opts={{}}) {{
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tabName));
+  document.querySelectorAll('.panel').forEach(p => p.classList.toggle('active', p.id === `tab-${{tabName}}`));
+  if (!opts.skipAutoLoad) {{
+    if (tabName === 'chats' && !window._chatsLoaded) loadChats();
+    if (tabName === 'media' && !window._mediaLoaded) loadMedia(true);
+    if (tabName === 'vault' && !window._vaultLoaded) loadVault();
+  }}
+}}
+document.querySelectorAll('.tab-btn').forEach(btn => btn.addEventListener('click', () => switchTab(btn.dataset.tab)));
+
+function jumpToChat(jid, name, phone='') {{
+  switchTab('chats', {{ skipAutoLoad: true }});
+  openChat(jid, name, false, phone);
+}}
+
+function filterSearchByChat(target) {{
+  switchTab('search');
+  document.getElementById('searchChat').value = target || '';
+  runSearch(true);
+}}
+
+function filterMediaByChat(target) {{
+  switchTab('media', {{ skipAutoLoad: true }});
+  document.getElementById('mediaChat').value = target || '';
+  loadMedia(true);
+}}
+
+// Chat / Phone Suggestions Datalist
+let _lastSuggestQ = null;
+async function loadChatSuggestions(q='') {{
+  const norm = (q || '').trim();
+  if (norm === _lastSuggestQ) return;
+  _lastSuggestQ = norm;
+  try {{
+    const items = await apiGet(`/api/chat_suggestions?q=${{encodeURIComponent(norm)}}&limit=120`);
+    const dl = document.getElementById('chatSuggestList');
+    dl.innerHTML = items.map(c => {{
+      const val = c.phone_number || c.chat_name || c.chat_jid;
+      const phoneTxt = c.phone_number ? ` · ${{fmtPhone(c.phone_number)}}` : (c.is_group ? ' · Group' : '');
+      return `<option value="${{esc(val)}}">${{esc(c.chat_name)}}${{esc(phoneTxt)}}</option>`;
+    }}).join('');
+  }} catch (_) {{}}
+}}
+const debouncedSuggest = debounce((val) => loadChatSuggestions(val), 220);
+['searchChat','mediaChat','vaultQuery'].forEach(id => {{
+  document.getElementById(id).addEventListener('input', e => debouncedSuggest(e.target.value));
 }});
 
 // Stats
@@ -776,6 +918,7 @@ function renderMessageCard(m) {{
   if (m.ocr_cached) badges += `<span class="badge saved">✨ AI Cached</span>`;
   if (m.is_deleted) badges += `<span class="badge deleted">🗑️ Deleted ${{esc(m.deleted_at)}}</span>`;
   if (m.is_edited) badges += `<span class="badge edited">✏️ Edited ${{esc(m.edited_at)}}</span>`;
+  const phonePill = m.chat_phone ? `<span class="phone-tag">${{esc(fmtPhone(m.chat_phone))}}</span>` : '';
   const origHtml = (m.original_text && m.original_text !== m.text && (m.is_deleted || m.is_edited))
     ? `<div class="orig-box"><strong>Preserved Original:</strong>\n${{esc(m.original_text)}}</div>` : '';
   const ocrHtml = m.ocr_cached
@@ -783,7 +926,12 @@ function renderMessageCard(m) {{
   return `
     <div class="msg-card">
       <div class="msg-meta">
-        <div><span class="who">${{esc(m.sender)}}</span> in <b>${{esc(m.chat_name)}}</b> ${{badges}}</div>
+        <div>
+          <span class="who">${{esc(m.sender)}}</span> in
+          <button class="link-pill" onclick="jumpToChat(${{escArg(m.chat_jid)}},${{escArg(m.chat_name)}},${{escArg(m.chat_phone || '')}})" title="Open this chat">💬 ${{esc(m.chat_name)}}</button>
+          ${{phonePill}}
+          ${{badges}}
+        </div>
         <div>${{esc(m.timestamp_str)}}</div>
       </div>
       <div class="msg-body">${{esc(m.text || m.media_filename || '[Empty]')}}</div>
@@ -800,13 +948,14 @@ async function runSearch(reset=true) {{
   if (reset) {{ searchOffset = 0; document.getElementById('searchResults').innerHTML = '<div class="muted">Searching...</div>'; }}
   const q = document.getElementById('searchQuery').value.trim();
   const chat = document.getElementById('searchChat').value.trim();
+  const scope = document.getElementById('searchScope').value;
   const mediaType = document.getElementById('searchType').value;
   const statuses = document.getElementById('searchStatuses').checked ? '1' : '0';
-  const rows = await apiGet(`/api/search?q=${{encodeURIComponent(q)}}&chat=${{encodeURIComponent(chat)}}&media_type=${{encodeURIComponent(mediaType)}}&statuses=${{statuses}}&limit=50&offset=${{searchOffset}}`);
+  const rows = await apiGet(`/api/search?q=${{encodeURIComponent(q)}}&chat=${{encodeURIComponent(chat)}}&scope=${{encodeURIComponent(scope)}}&media_type=${{encodeURIComponent(mediaType)}}&statuses=${{statuses}}&limit=50&offset=${{searchOffset}}`);
   const box = document.getElementById('searchResults');
   if (reset) box.innerHTML = '';
   if (!rows.length && reset) {{
-    box.innerHTML = '<div class="muted">No matching messages found.</div>';
+    box.innerHTML = '<div class="empty-state">🔍 No matching messages found.<br/><span class="muted">Try a shorter keyword, phone digits (e.g. 98505), or switch chat scope.</span></div>';
   }} else {{
     box.insertAdjacentHTML('beforeend', rows.map(renderMessageCard).join(''));
     searchOffset += rows.length;
@@ -815,30 +964,51 @@ async function runSearch(reset=true) {{
 }}
 document.getElementById('searchBtn').addEventListener('click', () => runSearch(true));
 document.getElementById('searchMoreBtn').addEventListener('click', () => runSearch(false));
+document.getElementById('searchScope').addEventListener('change', () => runSearch(true));
+document.getElementById('searchType').addEventListener('change', () => runSearch(true));
+document.getElementById('searchStatuses').addEventListener('change', () => runSearch(true));
+document.getElementById('searchClearBtn').addEventListener('click', () => {{
+  document.getElementById('searchQuery').value = '';
+  document.getElementById('searchChat').value = '';
+  document.getElementById('searchScope').value = 'all';
+  document.getElementById('searchType').value = 'all';
+  document.getElementById('searchStatuses').checked = false;
+  runSearch(true);
+}});
 ['searchQuery','searchChat'].forEach(id => document.getElementById(id).addEventListener('keydown', e => {{ if (e.key === 'Enter') runSearch(true); }}));
 
 // Chats Tab
 let activeChatJid = '';
+let activeChatPhone = '';
 let oldestChatTs = 0;
+let chatScope = 'all';
 async function loadChats() {{
   window._chatsLoaded = true;
   const q = document.getElementById('chatFilterInput').value.trim();
   const st = document.getElementById('chatIncludeStatuses').checked ? '1' : '0';
-  const chats = await apiGet(`/api/chats?q=${{encodeURIComponent(q)}}&statuses=${{st}}&limit=100`);
+  const chats = await apiGet(`/api/chats?q=${{encodeURIComponent(q)}}&scope=${{encodeURIComponent(chatScope)}}&statuses=${{st}}&limit=100`);
   const el = document.getElementById('chatList');
-  if (!chats.length) {{ el.innerHTML = '<div class="muted" style="padding:12px">No matching chats.</div>'; return; }}
+  if (!chats.length) {{ el.innerHTML = '<div class="empty-state" style="margin:10px">No matching chats or phone numbers.</div>'; return; }}
   el.innerHTML = chats.map(c => `
-    <div class="chat-item ${{c.chat_jid === activeChatJid ? 'active' : ''}}" onclick="openChat('${{esc(c.chat_jid)}}','${{esc(c.chat_name)}}')">
+    <div class="chat-item ${{c.chat_jid === activeChatJid ? 'active' : ''}}" onclick="openChat(${{escArg(c.chat_jid)}},${{escArg(c.chat_name)}},false,${{escArg(c.phone_number || '')}})">
       <div class="chat-item-top">
-        <span>${{c.is_group ? '👥 ' : '👤 '}}${{esc(c.chat_name)}}</span>
-        <span class="muted">${{c.msg_count}}</span>
+        <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${{c.is_group ? '👥 ' : '👤 '}}${{esc(c.chat_name)}}</span>
+        <span class="badge">${{c.msg_count}}</span>
       </div>
+      ${{c.phone_number ? `<div class="phone-tag">${{esc(fmtPhone(c.phone_number))}}</div>` : ''}}
       <div class="chat-item-sub">${{esc(c.last_time)}} · ${{esc(c.preview || c.last_media_type)}}</div>
     </div>
   `).join('');
 }}
-document.getElementById('chatFilterInput').addEventListener('input', () => loadChats());
+document.getElementById('chatFilterInput').addEventListener('input', debounce(() => loadChats(), 200));
 document.getElementById('chatIncludeStatuses').addEventListener('change', () => loadChats());
+document.querySelectorAll('#chatScopePills .scope-btn').forEach(btn => {{
+  btn.addEventListener('click', () => {{
+    chatScope = btn.dataset.scope;
+    document.querySelectorAll('#chatScopePills .scope-btn').forEach(b => b.classList.toggle('active', b === btn));
+    loadChats();
+  }});
+}});
 
 function renderBubble(m) {{
   const tags = [];
@@ -857,9 +1027,13 @@ function renderBubble(m) {{
   `;
 }}
 
-async function openChat(jid, name, older=false) {{
+async function openChat(jid, name, older=false, phone='') {{
   activeChatJid = jid;
+  if (!older) activeChatPhone = phone || '';
   document.getElementById('activeChatTitle').textContent = name || jid;
+  document.getElementById('activeChatSub').textContent = activeChatPhone ? fmtPhone(activeChatPhone) : jid;
+  document.getElementById('chatSearchJumpBtn').style.display = 'inline-flex';
+  document.getElementById('chatMediaJumpBtn').style.display = 'inline-flex';
   const msgBox = document.getElementById('chatMessages');
   if (!older) {{ oldestChatTs = 0; msgBox.innerHTML = '<div class="muted">Loading messages...</div>'; }}
   const rows = await apiGet(`/api/chat?jid=${{encodeURIComponent(jid)}}&before=${{older ? oldestChatTs : 0}}&limit=80`);
@@ -876,7 +1050,13 @@ async function openChat(jid, name, older=false) {{
   loadChats();
 }}
 document.getElementById('loadOlderBtn').addEventListener('click', () => {{
-  if (activeChatJid) openChat(activeChatJid, document.getElementById('activeChatTitle').textContent, true);
+  if (activeChatJid) openChat(activeChatJid, document.getElementById('activeChatTitle').textContent, true, activeChatPhone);
+}});
+document.getElementById('chatSearchJumpBtn').addEventListener('click', () => {{
+  if (activeChatJid) filterSearchByChat(activeChatPhone || activeChatJid);
+}});
+document.getElementById('chatMediaJumpBtn').addEventListener('click', () => {{
+  if (activeChatJid) filterMediaByChat(activeChatPhone || activeChatJid);
 }});
 
 // Media Gallery Tab
@@ -885,11 +1065,14 @@ async function loadMedia(reset=true) {{
   window._mediaLoaded = true;
   if (reset) mediaOffset = 0;
   const f = document.getElementById('mediaFilter').value;
+  const chat = document.getElementById('mediaChat').value.trim();
+  const scope = document.getElementById('mediaScope').value;
   const q = document.getElementById('mediaQuery').value.trim();
-  const rows = await apiGet(`/api/media_list?filter=${{encodeURIComponent(f)}}&q=${{encodeURIComponent(q)}}&limit=60&offset=${{mediaOffset}}`);
+  const statuses = document.getElementById('mediaStatuses').checked ? '1' : '0';
+  const rows = await apiGet(`/api/media_list?filter=${{encodeURIComponent(f)}}&chat=${{encodeURIComponent(chat)}}&scope=${{encodeURIComponent(scope)}}&q=${{encodeURIComponent(q)}}&statuses=${{statuses}}&limit=60&offset=${{mediaOffset}}`);
   const grid = document.getElementById('mediaGrid');
   if (reset) grid.innerHTML = '';
-  if (!rows.length && reset) {{ grid.innerHTML = '<div class="muted">No stored media matching filters.</div>'; }}
+  if (!rows.length && reset) {{ grid.innerHTML = '<div class="empty-state" style="grid-column:1/-1">🖼️ No stored media matching these filters.</div>'; }}
   else {{
     grid.insertAdjacentHTML('beforeend', rows.map(m => {{
       const mt = (m.media_type || '').toLowerCase();
@@ -905,12 +1088,17 @@ async function loadMedia(reset=true) {{
       const clickCall = mt === 'document'
         ? `openDocModal(${{escArg(m.id)}},${{escArg(fname)}})`
         : `openItemModal(${{escArg(m.id)}},${{escArg(fname)}},${{escArg(modalKind)}})`;
+      const filterTarget = m.chat_phone || m.chat_name;
       return `
         <div class="media-tile">
           <div class="media-tile-preview" onclick="${{clickCall}}">${{prev}}</div>
           <div class="media-tile-info">
             <div class="media-tile-title" title="${{esc(fname)}}">${{esc(fname)}}</div>
-            <div class="muted">${{esc(m.chat_name)}} · ${{fmtBytes(m.media_size)}}</div>
+            <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+              <button class="link-pill" onclick="filterMediaByChat(${{escArg(filterTarget)}})" title="Filter media by this chat / phone">${{esc(m.chat_name)}}</button>
+              <span class="muted">${{fmtBytes(m.media_size)}}</span>
+            </div>
+            ${{m.chat_phone ? `<div class="phone-tag">${{esc(fmtPhone(m.chat_phone))}}</div>` : ''}}
             <div class="muted">${{esc(m.timestamp_str)}}</div>
             <div class="media-bar">
               <a class="ghost-btn" href="${{mediaUrl(m.id, true)}}">⬇ Save</a>
@@ -927,18 +1115,29 @@ async function loadMedia(reset=true) {{
 }}
 document.getElementById('mediaSearchBtn').addEventListener('click', () => loadMedia(true));
 document.getElementById('mediaFilter').addEventListener('change', () => loadMedia(true));
+document.getElementById('mediaScope').addEventListener('change', () => loadMedia(true));
+document.getElementById('mediaStatuses').addEventListener('change', () => loadMedia(true));
 document.getElementById('mediaMoreBtn').addEventListener('click', () => loadMedia(false));
-document.getElementById('mediaQuery').addEventListener('keydown', e => {{ if (e.key === 'Enter') loadMedia(true); }});
+document.getElementById('mediaClearBtn').addEventListener('click', () => {{
+  document.getElementById('mediaFilter').value = 'all';
+  document.getElementById('mediaChat').value = '';
+  document.getElementById('mediaScope').value = 'all';
+  document.getElementById('mediaQuery').value = '';
+  document.getElementById('mediaStatuses').checked = true;
+  loadMedia(true);
+}});
+['mediaChat','mediaQuery'].forEach(id => document.getElementById(id).addEventListener('keydown', e => {{ if (e.key === 'Enter') loadMedia(true); }}));
 
 // Vault Tab
 async function loadVault() {{
   window._vaultLoaded = true;
   const mode = document.getElementById('vaultMode').value;
   const q = document.getElementById('vaultQuery').value.trim();
-  const rows = await apiGet(`/api/vault?mode=${{encodeURIComponent(mode)}}&q=${{encodeURIComponent(q)}}&limit=50`);
+  const scope = document.getElementById('vaultScope').value;
+  const rows = await apiGet(`/api/vault?mode=${{encodeURIComponent(mode)}}&q=${{encodeURIComponent(q)}}&scope=${{encodeURIComponent(scope)}}&limit=50`);
   const el = document.getElementById('vaultResults');
   if (!rows.length) {{
-    el.innerHTML = '<div class="muted">No deleted or edited messages archived yet. Incoming revokes &amp; edits appear here automatically.</div>';
+    el.innerHTML = '<div class="empty-state">🛡️ No matching deleted or edited messages found.<br/><span class="muted">Incoming revokes &amp; edits are archived here automatically.</span></div>';
     return;
   }}
   el.innerHTML = rows.map(r => {{
@@ -948,19 +1147,40 @@ async function loadVault() {{
     return `
       <div class="msg-card">
         <div class="msg-meta">
-          <div><span class="who">${{esc(r.sender)}}</span> in <b>${{esc(r.chat)}}</b> ${{badge}}</div>
+          <div>
+            <span class="who">${{esc(r.sender)}}</span> in
+            <button class="link-pill" onclick="jumpToChat(${{escArg(r.chat_jid)}},${{escArg(r.chat)}})" title="Open this chat">💬 ${{esc(r.chat)}}</button>
+            ${{badge}}
+          </div>
           <div>Sent: ${{esc(r.sent_at)}}</div>
         </div>
         <div class="orig-box"><strong>Preserved Original:</strong>\n${{esc(r.original_text || r.current_text || '[No text]')}}</div>
         ${{r.is_edited && r.current_text ? `<div class="msg-body" style="margin-top:8px"><strong>Latest Text:</strong> ${{esc(r.current_text)}}</div>` : ''}}
         ${{revs ? `<div class="muted" style="margin-top:8px">${{revs}}</div>` : ''}}
-        ${{r.media_saved_on_disk ? `<div class="media-bar"><a class="ghost-btn" href="${{mediaUrl(r.id, true)}}">⬇ Saved Media (${{esc(r.media_filename || r.media_type)}})</a><button class="ghost-btn" onclick="openItemModal('${{esc(r.id)}}','${{esc(r.media_filename || r.media_type)}}','${{esc(r.media_type)}}')">👁️ Inspect</button></div>` : ''}}
+        ${{r.media_saved_on_disk ? `<div class="media-bar"><a class="ghost-btn" href="${{mediaUrl(r.id, true)}}">⬇ Saved Media (${{esc(r.media_filename || r.media_type)}})</a><button class="ghost-btn" onclick="openItemModal(${{escArg(r.id)}},${{escArg(r.media_filename || r.media_type)}},${{escArg(r.media_type)}})">👁️ Inspect</button></div>` : ''}}
       </div>
     `;
   }}).join('');
 }}
 document.getElementById('vaultRefreshBtn').addEventListener('click', loadVault);
 document.getElementById('vaultMode').addEventListener('change', loadVault);
+document.getElementById('vaultScope').addEventListener('change', loadVault);
+document.getElementById('vaultQuery').addEventListener('keydown', e => {{ if (e.key === 'Enter') loadVault(); }});
+document.getElementById('vaultClearBtn').addEventListener('click', () => {{
+  document.getElementById('vaultMode').value = 'all';
+  document.getElementById('vaultQuery').value = '';
+  document.getElementById('vaultScope').value = 'all';
+  loadVault();
+}});
+
+// Global '/' search shortcut
+document.addEventListener('keydown', e => {{
+  if (e.key === '/' && !['INPUT','TEXTAREA','SELECT'].includes(document.activeElement?.tagName)) {{
+    e.preventDefault();
+    switchTab('search');
+    document.getElementById('searchQuery').focus();
+  }}
+}});
 
 // Modals
 document.getElementById('previewDialog').addEventListener('close', () => {{
@@ -1038,6 +1258,7 @@ if (askBtn) {{
 }}
 
 loadStats();
+loadChatSuggestions('');
 runSearch(true);
 </script>
 </body>
@@ -1311,10 +1532,21 @@ class WebUIServer:
 
                     if path == "/api/chats":
                         q = (qs.get("q", [""])[0] or "").strip()
+                        scope = (qs.get("scope", ["all"])[0] or "all").strip()
                         statuses = _bool_param(qs.get("statuses", ["0"])[0])
                         limit = _clamp_int(qs.get("limit", ["80"])[0], 80, 1, 200)
                         offset = _clamp_int(qs.get("offset", ["0"])[0], 0, 0, 50000)
-                        self._send_json(parent.db.list_chats(search=q, include_statuses=statuses, limit=limit, offset=offset))
+                        self._send_json(
+                            parent.db.list_chats(
+                                search=q, chat_scope=scope, include_statuses=statuses, limit=limit, offset=offset
+                            )
+                        )
+                        return
+
+                    if path == "/api/chat_suggestions":
+                        q = (qs.get("q", [""])[0] or "").strip()
+                        limit = _clamp_int(qs.get("limit", ["120"])[0], 120, 1, 250)
+                        self._send_json(parent.db.list_chat_suggestions(query=q, limit=limit))
                         return
 
                     if path == "/api/chat":
@@ -1327,6 +1559,7 @@ class WebUIServer:
                     if path == "/api/search":
                         q = (qs.get("q", [""])[0] or "").strip()
                         chat = (qs.get("chat", [""])[0] or "").strip()
+                        scope = (qs.get("scope", ["all"])[0] or "all").strip()
                         media_type = (qs.get("media_type", ["all"])[0] or "all").strip()
                         statuses = _bool_param(qs.get("statuses", ["0"])[0])
                         limit = _clamp_int(qs.get("limit", ["50"])[0], 50, 1, 200)
@@ -1335,6 +1568,7 @@ class WebUIServer:
                             parent.db.search_messages_web(
                                 query=q,
                                 chat_jid=chat,
+                                chat_scope=scope,
                                 media_type=media_type,
                                 include_statuses=statuses,
                                 limit=limit,
@@ -1346,12 +1580,20 @@ class WebUIServer:
                     if path == "/api/media_list":
                         flt = (qs.get("filter", ["all"])[0] or "all").strip()
                         q = (qs.get("q", [""])[0] or "").strip()
+                        chat = (qs.get("chat", [""])[0] or "").strip()
+                        scope = (qs.get("scope", ["all"])[0] or "all").strip()
                         statuses = _bool_param(qs.get("statuses", ["1"])[0])
                         limit = _clamp_int(qs.get("limit", ["60"])[0], 60, 1, 200)
                         offset = _clamp_int(qs.get("offset", ["0"])[0], 0, 0, 50000)
                         self._send_json(
                             parent.db.list_stored_media(
-                                media_filter=flt, query=q, include_statuses=statuses, limit=limit, offset=offset
+                                media_filter=flt,
+                                query=q,
+                                chat=chat,
+                                chat_scope=scope,
+                                include_statuses=statuses,
+                                limit=limit,
+                                offset=offset,
                             )
                         )
                         return
@@ -1359,9 +1601,12 @@ class WebUIServer:
                     if path == "/api/vault":
                         mode = (qs.get("mode", ["all"])[0] or "all").strip()
                         q = (qs.get("q", [""])[0] or "").strip()
+                        scope = (qs.get("scope", ["all"])[0] or "all").strip()
                         limit = _clamp_int(qs.get("limit", ["50"])[0], 50, 1, 200)
                         self._send_json(
-                            parent.db.find_deleted_or_edited_messages(mode=mode, chat_name_or_jid=q, limit=limit)
+                            parent.db.find_deleted_or_edited_messages(
+                                mode=mode, chat_name_or_jid=q, chat_scope=scope, limit=limit
+                            )
                         )
                         return
 

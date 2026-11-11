@@ -86,6 +86,7 @@ class DatabaseManager:
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_contacts_name ON contacts(name);")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_contacts_push_name ON contacts(push_name);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_contacts_phone ON contacts(phone_number);")
 
             # 2. Messages Table
             conn.execute(
@@ -1094,6 +1095,7 @@ class DatabaseManager:
         self,
         mode: str = "all",
         chat_name_or_jid: str = "",
+        chat_scope: str = "all",
         limit: int = 20,
     ) -> list[dict[str, Any]]:
         """Retrieve deleted and/or edited messages preserved by the Anti-Delete & Edit Vault."""
@@ -1105,33 +1107,23 @@ class DatabaseManager:
         else:
             conditions = ["(m.is_deleted = 1 OR m.is_edited = 1)"]
 
-        params: list[Any] = []
-        if chat_name_or_jid and chat_name_or_jid.strip():
-            target = chat_name_or_jid.strip()
-            target_jid = self.resolve_chat_jid(target)
-            like_q = f"%{target.lower()}%"
-            if target_jid:
-                conditions.append(
-                    "(m.chat_jid = ? OR m.sender_jid = ? OR LOWER(m.chat_name) LIKE ? OR LOWER(m.sender_name) LIKE ?)"
-                )
-                params.extend([target_jid, target_jid, like_q, like_q])
-            else:
-                conditions.append("(LOWER(m.chat_name) LIKE ? OR LOWER(m.sender_name) LIKE ?)")
-                params.extend([like_q, like_q])
-
-        where_sql = " AND ".join(conditions)
-        sql = f"""
-        SELECT m.id, m.chat_jid, m.chat_name, m.sender_jid, m.sender_name, m.is_from_me,
-               m.text, m.original_text, m.timestamp, m.media_type, m.media_filename, m.local_path,
-               m.is_deleted, m.deleted_at, m.deleted_by, m.is_edited, m.edited_at
-        FROM messages m
-        WHERE {where_sql}
-        ORDER BY MAX(COALESCE(m.deleted_at, 0), COALESCE(m.edited_at, 0), COALESCE(m.timestamp, 0)) DESC
-        LIMIT ?
-        """
-        params.append(limit)
-
         with self._get_connection() as conn:
+            chat_conds, params = self._build_chat_filter_conditions(
+                conn, chat_filter=chat_name_or_jid, chat_scope=chat_scope, alias="m", include_sender=True
+            )
+            conditions.extend(chat_conds)
+
+            where_sql = " AND ".join(conditions)
+            sql = f"""
+            SELECT m.id, m.chat_jid, m.chat_name, m.sender_jid, m.sender_name, m.is_from_me,
+                   m.text, m.original_text, m.timestamp, m.media_type, m.media_filename, m.local_path,
+                   m.is_deleted, m.deleted_at, m.deleted_by, m.is_edited, m.edited_at
+            FROM messages m
+            WHERE {where_sql}
+            ORDER BY MAX(COALESCE(m.deleted_at, 0), COALESCE(m.edited_at, 0), COALESCE(m.timestamp, 0)) DESC
+            LIMIT ?
+            """
+            params.append(limit)
             rows = conn.execute(sql, tuple(params)).fetchall()
             msg_ids = [r["id"] for r in rows]
             revisions_by_msg: dict[str, list[dict[str, Any]]] = {}
@@ -1269,22 +1261,31 @@ class DatabaseManager:
         Supports both full substring and multi-word out-of-order matching (e.g. 'Patil Ayush' matches 'Ayush Patil').
         """
         cleaned_query = f"%{query.strip().lower()}%"
+        digits = self._normalize_phone_digits(query)
+        like_digits = f"%{digits}%" if digits else cleaned_query
         words = [w for w in query.strip().lower().split() if len(w) > 1]
 
         with self._get_connection() as conn:
-            # 1. Exact / Full substring match first
+            # 1. Exact / Full substring + normalized phone-digit match first
             sql_exact = """
             SELECT jid, name, push_name, phone_number, is_group, updated_at
             FROM contacts
             WHERE (LOWER(name) LIKE ?
                OR LOWER(push_name) LIKE ?
                OR phone_number LIKE ?
+               OR jid LIKE ?
+               OR phone_number LIKE ?
                OR jid LIKE ?)
               AND jid != 'status@broadcast'
             ORDER BY updated_at DESC
             LIMIT ?
             """
-            rows = list(conn.execute(sql_exact, (cleaned_query, cleaned_query, cleaned_query, cleaned_query, limit)).fetchall())
+            rows = list(
+                conn.execute(
+                    sql_exact,
+                    (cleaned_query, cleaned_query, cleaned_query, cleaned_query, like_digits, like_digits, limit),
+                ).fetchall()
+            )
 
             # 2. If multi-word query and few results, match if ALL words appear across name or push_name
             if len(rows) < limit and len(words) > 1:
@@ -1925,6 +1926,143 @@ class DatabaseManager:
             }
 
     @staticmethod
+    def _extract_phone_from_jid(jid: str | None) -> str:
+        """Extract raw digits phone number from a standard @s.whatsapp.net JID if present."""
+        if not jid or not jid.endswith("@s.whatsapp.net"):
+            return ""
+        user_part = jid.split("@", 1)[0]
+        return user_part if user_part.isdigit() else ""
+
+    @staticmethod
+    def _normalize_phone_digits(query: str) -> str:
+        """Extract normalized phone digits when the filter looks like a phone fragment (>= 3 digits)."""
+        if not query:
+            return ""
+        digits = re.sub(r"\D+", "", query)
+        return digits if len(digits) >= 3 else ""
+
+    @staticmethod
+    def _build_chat_scope_clause(chat_scope: str, alias: str = "m") -> tuple[str, list[Any]]:
+        """Build SQL clause for 'all', 'dm', or 'group' filtering."""
+        sc = (chat_scope or "").strip().lower()
+        p = f"{alias}." if alias else ""
+        if sc == "dm":
+            return f"{p}is_group = 0 AND {p}chat_jid != 'status@broadcast'", []
+        if sc == "group":
+            return f"{p}is_group = 1", []
+        return "", []
+
+    def _resolve_matching_jids_and_digits(
+        self, conn: sqlite3.Connection, chat_filter: str, limit: int = 30
+    ) -> tuple[list[str], str]:
+        """Resolve all matching contact JIDs (including @lid and phone JIDs) plus normalized digits."""
+        raw = (chat_filter or "").strip()
+        if not raw:
+            return [], ""
+        digits = self._normalize_phone_digits(raw)
+        like_q = f"%{raw.lower()}%"
+
+        conds = [
+            "LOWER(COALESCE(name, '')) LIKE ?",
+            "LOWER(COALESCE(push_name, '')) LIKE ?",
+            "LOWER(jid) LIKE ?",
+        ]
+        params: list[Any] = [like_q, like_q, like_q]
+        if digits:
+            like_d = f"%{digits}%"
+            conds.extend(["COALESCE(phone_number, '') LIKE ?", "jid LIKE ?"])
+            params.extend([like_d, like_d])
+            if len(digits) > 10:
+                conds.append("COALESCE(phone_number, '') LIKE ?")
+                params.append(f"%{digits[-10:]}%")
+
+        rows = conn.execute(
+            f"""
+            SELECT jid, phone_number
+            FROM contacts
+            WHERE jid != 'status@broadcast' AND ({' OR '.join(conds)})
+            ORDER BY updated_at DESC
+            LIMIT ?
+            """,
+            tuple([*params, limit]),
+        ).fetchall()
+
+        jids: list[str] = []
+        seen: set[str] = set()
+        for r in rows:
+            for candidate in (
+                r["jid"],
+                f"{r['phone_number']}@s.whatsapp.net" if r["phone_number"] else "",
+            ):
+                if candidate and candidate not in seen:
+                    seen.add(candidate)
+                    jids.append(candidate)
+
+        if "@" in raw and raw not in seen:
+            jids.append(raw)
+        return jids, digits
+
+    def _build_chat_filter_conditions(
+        self,
+        conn: sqlite3.Connection,
+        chat_filter: str = "",
+        chat_scope: str = "all",
+        alias: str = "m",
+        include_sender: bool = True,
+    ) -> tuple[list[str], list[Any]]:
+        """Build unified SQL WHERE conditions for chat name, phone number (+country/digits), JID, and scope."""
+        conditions: list[str] = []
+        params: list[Any] = []
+        p = f"{alias}." if alias else ""
+
+        scope_sql, scope_params = self._build_chat_scope_clause(chat_scope, alias=alias)
+        if scope_sql:
+            conditions.append(scope_sql)
+            params.extend(scope_params)
+
+        raw = (chat_filter or "").strip()
+        if not raw:
+            return conditions, params
+
+        like_q = f"%{raw.lower()}%"
+        or_clauses = [
+            f"LOWER(COALESCE({p}chat_name, '')) LIKE ?",
+            f"LOWER({p}chat_jid) LIKE ?",
+        ]
+        or_params: list[Any] = [like_q, like_q]
+
+        if include_sender:
+            or_clauses.extend([
+                f"LOWER(COALESCE({p}sender_name, '')) LIKE ?",
+                f"LOWER(COALESCE({p}sender_jid, '')) LIKE ?",
+            ])
+            or_params.extend([like_q, like_q])
+
+        matched_jids, digits = self._resolve_matching_jids_and_digits(conn, raw)
+        if digits:
+            digit_patterns = [f"%{digits}%"]
+            if len(digits) > 10:
+                digit_patterns.append(f"%{digits[-10:]}%")
+            for dp in digit_patterns:
+                or_clauses.append(f"{p}chat_jid LIKE ?")
+                or_params.append(dp)
+                if include_sender:
+                    or_clauses.append(f"{p}sender_jid LIKE ?")
+                    or_params.append(dp)
+
+        if matched_jids:
+            ph = ",".join("?" for _ in matched_jids)
+            or_clauses.append(f"{p}chat_jid IN ({ph})")
+            or_params.extend(matched_jids)
+            if include_sender:
+                or_clauses.append(f"{p}sender_jid IN ({ph})")
+                or_params.extend(matched_jids)
+
+        conditions.append(f"({' OR '.join(or_clauses)})")
+        params.extend(or_params)
+        return conditions, params
+
+    @staticmethod
     def _format_web_message_row(r: sqlite3.Row) -> dict[str, Any]:
         """Convert a database message row (+ optional media_ocr_cache join) into a Web UI payload dict."""
         keys = set(r.keys())
@@ -1938,6 +2076,7 @@ class DatabaseManager:
             "id": r["id"],
             "chat_jid": r["chat_jid"],
             "chat_name": r["chat_name"] or r["chat_jid"],
+            "chat_phone": DatabaseManager._extract_phone_from_jid(r["chat_jid"]),
             "sender": sender,
             "is_from_me": bool(r["is_from_me"]),
             "is_group": bool(r["is_group"]),
@@ -1971,37 +2110,37 @@ class DatabaseManager:
     def list_chats(
         self,
         search: str = "",
+        chat_scope: str = "all",
         include_statuses: bool = False,
         limit: int = 80,
         offset: int = 0,
     ) -> list[dict[str, Any]]:
-        """Return synced chats ordered by latest activity with message counts and last preview."""
-        conditions = []
-        params: list[Any] = []
-        if not include_statuses:
-            conditions.append("chat_jid != 'status@broadcast'")
-        if search and search.strip():
-            like_q = f"%{search.strip().lower()}%"
-            conditions.append("(LOWER(COALESCE(chat_name, '')) LIKE ? OR LOWER(chat_jid) LIKE ? OR LOWER(COALESCE(sender_name, '')) LIKE ?)")
-            params.extend([like_q, like_q, like_q])
-        where_sql = f"WHERE {' AND '.join(conditions)}" if conditions else ""
-
-        sql = f"""
-        SELECT chat_jid,
-               MAX(chat_name) AS chat_name,
-               MAX(is_group) AS is_group,
-               COUNT(*) AS msg_count,
-               MAX(timestamp) AS last_ts,
-               MAX(rowid) AS last_rowid
-        FROM messages
-        {where_sql}
-        GROUP BY chat_jid
-        ORDER BY last_ts DESC
-        LIMIT ? OFFSET ?
-        """
-        params.extend([limit, offset])
-
+        """Return synced chats ordered by latest activity with message counts, phone numbers, and last preview."""
         with self._get_connection() as conn:
+            conditions: list[str] = []
+            if not include_statuses:
+                conditions.append("chat_jid != 'status@broadcast'")
+            chat_conds, params = self._build_chat_filter_conditions(
+                conn, chat_filter=search, chat_scope=chat_scope, alias="", include_sender=True
+            )
+            conditions.extend(chat_conds)
+            where_sql = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+
+            sql = f"""
+            SELECT chat_jid,
+                   MAX(chat_name) AS chat_name,
+                   MAX(is_group) AS is_group,
+                   COUNT(*) AS msg_count,
+                   MAX(timestamp) AS last_ts,
+                   MAX(rowid) AS last_rowid
+            FROM messages
+            {where_sql}
+            GROUP BY chat_jid
+            ORDER BY last_ts DESC
+            LIMIT ? OFFSET ?
+            """
+            params.extend([limit, offset])
+
             groups = conn.execute(sql, tuple(params)).fetchall()
             if not groups:
                 return []
@@ -2009,6 +2148,7 @@ class DatabaseManager:
             jids = [g["chat_jid"] for g in groups]
             rowids = [g["last_rowid"] for g in groups if g["last_rowid"]]
             contact_names: dict[str, str] = {}
+            contact_phones: dict[str, str] = {}
             last_msgs: dict[str, sqlite3.Row] = {}
 
             jid_ph = ",".join("?" for _ in jids)
@@ -2017,6 +2157,8 @@ class DatabaseManager:
                 tuple(jids),
             ).fetchall():
                 contact_names[cr["jid"]] = cr["name"] or cr["push_name"] or cr["phone_number"] or ""
+                if cr["phone_number"]:
+                    contact_phones[cr["jid"]] = str(cr["phone_number"])
 
             if rowids:
                 rid_ph = ",".join("?" for _ in rowids)
@@ -2029,9 +2171,11 @@ class DatabaseManager:
             results = []
             for g in groups:
                 cj = g["chat_jid"]
+                is_group = bool(g["is_group"])
                 cname = g["chat_name"] or contact_names.get(cj) or cj
                 if cj == "status@broadcast":
                     cname = "Status Updates"
+                phone = "" if (is_group or cj == "status@broadcast") else (contact_phones.get(cj) or self._extract_phone_from_jid(cj))
                 lm = last_msgs.get(cj)
                 preview = ""
                 last_media = "text"
@@ -2041,7 +2185,8 @@ class DatabaseManager:
                 results.append({
                     "chat_jid": cj,
                     "chat_name": cname,
-                    "is_group": bool(g["is_group"]),
+                    "phone_number": phone,
+                    "is_group": is_group,
                     "msg_count": int(g["msg_count"] or 0),
                     "last_ts": int(g["last_ts"] or 0),
                     "last_time": _format_timestamp(g["last_ts"]),
@@ -2082,35 +2227,13 @@ class DatabaseManager:
         self,
         query: str = "",
         chat_jid: str = "",
+        chat_scope: str = "all",
         media_type: str = "",
         include_statuses: bool = False,
         limit: int = 60,
         offset: int = 0,
     ) -> list[dict[str, Any]]:
-        """Rich search endpoint for the Web UI combining FTS5/LIKE text search with chat & media filters."""
-        base_conditions: list[str] = []
-        base_params: list[Any] = []
-        if not include_statuses:
-            base_conditions.append("m.chat_jid != 'status@broadcast'")
-        if chat_jid and chat_jid.strip():
-            resolved = self.resolve_chat_jid(chat_jid.strip())
-            like_c = f"%{chat_jid.strip().lower()}%"
-            if resolved:
-                base_conditions.append(
-                    "(m.chat_jid = ? OR m.sender_jid = ? OR LOWER(COALESCE(m.chat_name, '')) LIKE ? OR LOWER(COALESCE(m.sender_name, '')) LIKE ?)"
-                )
-                base_params.extend([resolved, resolved, like_c, like_c])
-            else:
-                base_conditions.append(
-                    "(LOWER(COALESCE(m.chat_name, '')) LIKE ? OR LOWER(COALESCE(m.sender_name, '')) LIKE ?)"
-                )
-                base_params.extend([like_c, like_c])
-
-        mt_sql, mt_params = self._build_media_type_clause(media_type, alias="m")
-        if mt_sql:
-            base_conditions.append(mt_sql)
-            base_params.extend(mt_params)
-
+        """Rich search endpoint for the Web UI combining FTS5/LIKE text search with chat/phone, scope & media filters."""
         cols_sql = """
         SELECT m.id, m.chat_jid, m.chat_name, m.sender_jid, m.sender_name, m.text, m.original_text,
                m.timestamp, m.is_from_me, m.is_group, m.media_type, m.media_filename, m.media_mimetype,
@@ -2119,9 +2242,22 @@ class DatabaseManager:
         """
         q_clean = (query or "").strip()
 
-        if q_clean:
-            try:
-                with self._get_connection() as conn:
+        with self._get_connection() as conn:
+            base_conditions: list[str] = []
+            if not include_statuses:
+                base_conditions.append("m.chat_jid != 'status@broadcast'")
+            chat_conds, base_params = self._build_chat_filter_conditions(
+                conn, chat_filter=chat_jid, chat_scope=chat_scope, alias="m", include_sender=True
+            )
+            base_conditions.extend(chat_conds)
+
+            mt_sql, mt_params = self._build_media_type_clause(media_type, alias="m")
+            if mt_sql:
+                base_conditions.append(mt_sql)
+                base_params.extend(mt_params)
+
+            if q_clean:
+                try:
                     safe_fts = q_clean.replace('"', '""')
                     fts_conds = ["messages_fts MATCH ?", *base_conditions]
                     fts_params: list[Any] = [f'"{safe_fts}"', *base_params, limit, offset]
@@ -2137,37 +2273,35 @@ class DatabaseManager:
                     rows = conn.execute(sql, tuple(fts_params)).fetchall()
                     if rows:
                         return [self._format_web_message_row(r) for r in rows]
-            except Exception as e:
-                logger.debug("Web FTS search fell back to LIKE (%s)", e)
+                except Exception as e:
+                    logger.debug("Web FTS search fell back to LIKE (%s)", e)
 
-            like_q = f"%{q_clean.lower()}%"
-            like_conds = [
-                "(LOWER(COALESCE(m.text, '')) LIKE ? OR LOWER(COALESCE(m.media_filename, '')) LIKE ? OR LOWER(COALESCE(m.original_text, '')) LIKE ? OR LOWER(COALESCE(c.ocr_text, '')) LIKE ?)",
-                *base_conditions,
-            ]
-            like_params: list[Any] = [like_q, like_q, like_q, like_q, *base_params, limit, offset]
+                like_q = f"%{q_clean.lower()}%"
+                like_conds = [
+                    "(LOWER(COALESCE(m.text, '')) LIKE ? OR LOWER(COALESCE(m.media_filename, '')) LIKE ? OR LOWER(COALESCE(m.original_text, '')) LIKE ? OR LOWER(COALESCE(c.ocr_text, '')) LIKE ?)",
+                    *base_conditions,
+                ]
+                like_params: list[Any] = [like_q, like_q, like_q, like_q, *base_params, limit, offset]
+                sql = f"""
+                {cols_sql}
+                FROM messages m
+                LEFT JOIN media_ocr_cache c ON m.id = c.msg_id
+                WHERE {' AND '.join(like_conds)}
+                ORDER BY m.timestamp DESC
+                LIMIT ? OFFSET ?
+                """
+                rows = conn.execute(sql, tuple(like_params)).fetchall()
+                return [self._format_web_message_row(r) for r in rows]
+
+            where_sql = f"WHERE {' AND '.join(base_conditions)}" if base_conditions else ""
             sql = f"""
             {cols_sql}
             FROM messages m
             LEFT JOIN media_ocr_cache c ON m.id = c.msg_id
-            WHERE {' AND '.join(like_conds)}
+            {where_sql}
             ORDER BY m.timestamp DESC
             LIMIT ? OFFSET ?
             """
-            with self._get_connection() as conn:
-                rows = conn.execute(sql, tuple(like_params)).fetchall()
-                return [self._format_web_message_row(r) for r in rows]
-
-        where_sql = f"WHERE {' AND '.join(base_conditions)}" if base_conditions else ""
-        sql = f"""
-        {cols_sql}
-        FROM messages m
-        LEFT JOIN media_ocr_cache c ON m.id = c.msg_id
-        {where_sql}
-        ORDER BY m.timestamp DESC
-        LIMIT ? OFFSET ?
-        """
-        with self._get_connection() as conn:
             rows = conn.execute(sql, tuple([*base_params, limit, offset])).fetchall()
             return [self._format_web_message_row(r) for r in rows]
 
@@ -2175,11 +2309,13 @@ class DatabaseManager:
         self,
         media_filter: str = "all",
         query: str = "",
+        chat: str = "",
+        chat_scope: str = "all",
         include_statuses: bool = True,
         limit: int = 60,
         offset: int = 0,
     ) -> list[dict[str, Any]]:
-        """List media files stored locally on disk for the Web UI gallery & document explorer."""
+        """List media files stored locally on disk with chat/phone, scope, type, and keyword filters."""
         conditions = ["m.local_path IS NOT NULL", "m.local_path NOT LIKE '[%'"]
         params: list[Any] = []
         mf = (media_filter or "all").strip().lower()
@@ -2200,21 +2336,58 @@ class DatabaseManager:
             )
             params.extend([like_q, like_q, like_q, like_q])
 
-        sql = f"""
-        SELECT m.id, m.chat_jid, m.chat_name, m.sender_jid, m.sender_name, m.text, m.original_text,
-               m.timestamp, m.is_from_me, m.is_group, m.media_type, m.media_filename, m.media_mimetype,
-               m.media_size, m.local_path, m.is_deleted, m.deleted_at, m.deleted_by, m.is_edited, m.edited_at,
-               c.ocr_text AS ocr_cached
-        FROM messages m
-        LEFT JOIN media_ocr_cache c ON m.id = c.msg_id
-        WHERE {' AND '.join(conditions)}
-        ORDER BY m.timestamp DESC
-        LIMIT ? OFFSET ?
-        """
-        params.extend([limit, offset])
         with self._get_connection() as conn:
+            chat_conds, chat_params = self._build_chat_filter_conditions(
+                conn, chat_filter=chat, chat_scope=chat_scope, alias="m", include_sender=True
+            )
+            conditions.extend(chat_conds)
+            params.extend(chat_params)
+
+            sql = f"""
+            SELECT m.id, m.chat_jid, m.chat_name, m.sender_jid, m.sender_name, m.text, m.original_text,
+                   m.timestamp, m.is_from_me, m.is_group, m.media_type, m.media_filename, m.media_mimetype,
+                   m.media_size, m.local_path, m.is_deleted, m.deleted_at, m.deleted_by, m.is_edited, m.edited_at,
+                   c.ocr_text AS ocr_cached
+            FROM messages m
+            LEFT JOIN media_ocr_cache c ON m.id = c.msg_id
+            WHERE {' AND '.join(conditions)}
+            ORDER BY m.timestamp DESC
+            LIMIT ? OFFSET ?
+            """
+            params.extend([limit, offset])
             rows = conn.execute(sql, tuple(params)).fetchall()
             return [self._format_web_message_row(r) for r in rows]
+
+    def list_chat_suggestions(self, query: str = "", limit: int = 120) -> list[dict[str, Any]]:
+        """Return deduplicated chat names, group names, and phone numbers for Web UI filter autocomplete."""
+        chats = self.list_chats(search=query, include_statuses=False, limit=limit)
+        seen: set[str] = set()
+        suggestions: list[dict[str, Any]] = []
+        for c in chats:
+            key = c["chat_jid"]
+            if key in seen:
+                continue
+            seen.add(key)
+            suggestions.append({
+                "chat_jid": c["chat_jid"],
+                "chat_name": c["chat_name"],
+                "phone_number": c.get("phone_number", ""),
+                "is_group": c["is_group"],
+            })
+
+        if len(suggestions) < limit and query.strip():
+            for ct in self.find_contacts(query.strip(), limit=limit - len(suggestions)):
+                key = ct["jid"]
+                if key in seen:
+                    continue
+                seen.add(key)
+                suggestions.append({
+                    "chat_jid": ct["jid"],
+                    "chat_name": ct["name"],
+                    "phone_number": ct.get("phone_number") or self._extract_phone_from_jid(ct["jid"]),
+                    "is_group": ct["is_group"],
+                })
+        return suggestions
 
     def get_message_media_info(self, msg_id: str) -> dict[str, Any] | None:
         """Retrieve local file path and metadata for serving a stored media attachment safely by msg_id."""
