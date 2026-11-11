@@ -1,6 +1,9 @@
+import hashlib
 import os
 import logging
 import re
+import shutil
+import subprocess
 import time
 import threading
 from concurrent.futures import ThreadPoolExecutor
@@ -15,7 +18,7 @@ from neonize.utils.enum import ChatPresence, ChatPresenceMedia
 from neonize.utils import ClientName
 
 from .config import Config
-from .database import DatabaseManager, _format_timestamp
+from .database import DatabaseManager, DOWNLOADABLE_MEDIA_TYPES, _format_timestamp
 from .gemini_agent import GeminiAgent
 from .utils import (
     MessageDeduplicator,
@@ -229,7 +232,15 @@ class WhatsAppBot:
 
                         rich_info = extract_rich_message_info(wmsg.message)
                         timestamp = normalize_timestamp(wmsg.messageTimestamp)
-                        raw_bytes = wmsg.message.SerializeToString() if hasattr(wmsg.message, "SerializeToString") else None
+                        # Only persist raw_message BLOBs for downloadable media (avoids DB bloat on text messages)
+                        raw_bytes = (
+                            wmsg.message.SerializeToString()
+                            if (
+                                rich_info.media_type in DOWNLOADABLE_MEDIA_TYPES
+                                and hasattr(wmsg.message, "SerializeToString")
+                            )
+                            else None
+                        )
 
                         pending_messages.append({
                             "msg_id": msg_id,
@@ -309,7 +320,14 @@ class WhatsAppBot:
 
                 rich_info = extract_rich_message_info(message.Message)
                 text = rich_info.text.strip()
-                raw_bytes = message.Message.SerializeToString() if hasattr(message.Message, "SerializeToString") else None
+                raw_bytes = (
+                    message.Message.SerializeToString()
+                    if (
+                        rich_info.media_type in DOWNLOADABLE_MEDIA_TYPES
+                        and hasattr(message.Message, "SerializeToString")
+                    )
+                    else None
+                )
 
                 # Store contact info
                 if push_name:
@@ -628,11 +646,14 @@ class WhatsAppBot:
                     pass
 
             stored_count = stats.get("total_stored_media", 0)
+            dedup_saved = stats.get("dedup_saved_files", 0)
+            dedup_note = f", {dedup_saved} deduped" if dedup_saved > 0 else ""
             storage_state = (
-                f"Active 🟢 ({stored_count} files, {stored_mb} MB stored on disk)"
+                f"Active 🟢 ({stored_count} items, {stored_mb} MB on disk{dedup_note})"
                 if Config.ENABLE_MEDIA_STORAGE
                 else "Disabled"
             )
+            key_count = len(getattr(self.gemini, "_clients", []) or [1])
 
             reply = (
                 "📊 *WAmate Second Brain Status*\n\n"
@@ -640,11 +661,11 @@ class WhatsAppBot:
                 f"• *Contacts & Groups:* {stats['total_contacts']:,} ({stats['total_groups']} groups)\n"
                 f"• *History Date Range:* {stats['oldest_date']} → {stats['newest_date']}\n"
                 f"• *Stored Media (30-day safe 💾):* {storage_state}\n"
-                f"• *OCR Cached Media:* {stats['total_ocr_cached']}\n"
+                f"• *OCR & Transcript Cache:* {stats['total_ocr_cached']}\n"
                 f"• *Idle OCR Worker:* {idle_state}\n"
                 f"• *Database Size:* {stats['db_size_mb']} MB\n"
                 f"• *Sync Status:* {sync_state}\n"
-                f"• *AI Model:* `{Config.GEMINI_MODEL}`\n\n"
+                f"• *AI Model:* `{Config.GEMINI_MODEL}` ({key_count} API key{'s' if key_count != 1 else ''})\n\n"
                 "_Send `!help` to view all commands!_"
             )
             self._send_self_chat_reply(client, chat_jid, message, reply)
@@ -860,11 +881,20 @@ class WhatsAppBot:
                 self.db.update_message_local_path(msg_id, "[EXPIRED_ON_WHATSAPP]")
                 return None, filename, mimetype, "WhatsApp download returned empty data (media link may have expired on servers)."
 
+            file_hash = hashlib.sha256(binary_data).hexdigest()
+            existing_path = self.db.find_existing_local_path_by_hash(file_hash)
+            if existing_path:
+                self.db.update_message_local_path(msg_id, existing_path, media_hash=file_hash)
+                logger.info("Deduplicated media file (SHA-256 match) for %s -> %s", msg_id, existing_path)
+                self._maybe_index_local_ocr(msg_id, existing_path, mimetype)
+                return existing_path, filename, mimetype, None
+
             with open(file_path, "wb") as f:
                 f.write(binary_data)
 
-            self.db.update_message_local_path(msg_id, str(file_path))
+            self.db.update_message_local_path(msg_id, str(file_path), media_hash=file_hash)
             logger.info("Successfully downloaded media file: %s (%d bytes)", file_path, len(binary_data))
+            self._maybe_index_local_ocr(msg_id, str(file_path), mimetype)
             return str(file_path), filename, mimetype, None
         except Exception as e:
             err_str = str(e).strip()
@@ -1199,6 +1229,146 @@ class WhatsAppBot:
 
         return "Found matching images, but could not download them from WhatsApp servers (links may have expired)."
 
+    def _maybe_index_local_ocr(self, msg_id: str, file_path: str, mimetype: str) -> None:
+        """Optionally run zero-API-cost offline tesseract OCR on downloaded images to enrich FTS5 text."""
+        if not Config.ENABLE_LOCAL_OCR:
+            return
+        if not mimetype or not mimetype.lower().startswith("image/"):
+            return
+        tesseract_bin = getattr(self, "_tesseract_bin_cache", None)
+        if tesseract_bin is None:
+            tesseract_bin = shutil.which("tesseract") or ""
+            self._tesseract_bin_cache = tesseract_bin
+        if not tesseract_bin:
+            return
+        try:
+            proc = subprocess.run(
+                [tesseract_bin, file_path, "stdout", "--psm", "6"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            )
+            if proc.returncode == 0 and proc.stdout:
+                cleaned = " ".join(proc.stdout.split())
+                if len(cleaned) >= 8:
+                    self.db.append_local_search_text(msg_id, cleaned)
+                    logger.debug("Indexed local CPU OCR text (%d chars) for %s", len(cleaned), msg_id)
+        except Exception as e:
+            logger.debug("Local tesseract OCR skipped for %s: %s", msg_id, e)
+
+    def _transcribe_single_audio_item(
+        self,
+        msg_id: str,
+        chat_name: str,
+        sender_name: str,
+        timestamp: str,
+        default_mime: str = "audio/ogg",
+        user_question: str = "",
+    ) -> str | None:
+        """Transcribe one voice note or audio clip (cache-first) and return formatted output."""
+        cached = self.db.get_ocr_cache(msg_id)
+        if cached:
+            logger.info("Found cached transcript for audio %s (instant local lookup)", msg_id)
+            return (
+                f"--- Voice Note Transcript ({msg_id}) from '{chat_name}' ({timestamp}) [Cached] ---\n"
+                f"Sender: {sender_name}\n\n"
+                f"{cached}\n"
+                f"--- End of Transcript ---"
+            )
+
+        file_path, real_filename, detected_mime, err = self.download_media_by_id(msg_id)
+        if err or not file_path:
+            return None
+
+        try:
+            with open(file_path, "rb") as f:
+                audio_bytes = f.read()
+            if not audio_bytes:
+                return None
+            mime = detected_mime or default_mime or "audio/ogg"
+            transcript = self.gemini.transcribe_audio_content(
+                audio_bytes, mimetype=mime, question=user_question
+            )
+            if transcript and not transcript.startswith("Audio transcription error"):
+                self.db.save_ocr_cache(msg_id, transcript, mimetype=mime)
+            return (
+                f"--- Voice Note Transcript ({real_filename or msg_id}) from '{chat_name}' ({timestamp}) ---\n"
+                f"Sender: {sender_name}\n\n"
+                f"{transcript}\n"
+                f"--- End of Transcript ---"
+            )
+        except Exception as e:
+            logger.exception("Failed to transcribe audio %s: %s", msg_id, e)
+            return None
+
+    def transcribe_voice_note(
+        self,
+        message_id: str = "",
+        contact_or_chat: str = "",
+        topic_or_query: str = "",
+        user_question: str = "",
+    ) -> str:
+        """Find a voice note or audio message, read/download it, and transcribe spoken words via Gemini."""
+        if message_id:
+            msg_id = message_id.strip()
+            raw = self.db.get_message_raw(msg_id)
+            if not raw:
+                return f"No voice note or audio message found in database with ID '{msg_id}'."
+            res = self._transcribe_single_audio_item(
+                msg_id=msg_id,
+                chat_name=raw.get("chat_name") or raw.get("chat_jid") or "Unknown",
+                sender_name=raw.get("sender_name") or "Unknown",
+                timestamp=_format_timestamp(raw.get("timestamp")),
+                default_mime=raw.get("mimetype") or "audio/ogg",
+                user_question=user_question,
+            )
+            return res or f"Could not download or transcribe audio message '{msg_id}' (media may have expired)."
+
+        candidates: list[dict[str, Any]] = []
+        for mtype in ("voice_note", "audio"):
+            candidates.extend(
+                self.db.find_voice_notes_and_media(
+                    media_type=mtype,
+                    query=topic_or_query,
+                    chat_name_or_jid=contact_or_chat,
+                    limit=10,
+                )
+            )
+        if not candidates and contact_or_chat and topic_or_query:
+            for mtype in ("voice_note", "audio"):
+                candidates.extend(
+                    self.db.find_voice_notes_and_media(
+                        media_type=mtype, query="", chat_name_or_jid=contact_or_chat, limit=10
+                    )
+                )
+
+        if not candidates:
+            target_desc = contact_or_chat or topic_or_query or "your chats"
+            return f"No voice notes or audio messages found matching '{target_desc}'."
+
+        seen_ids: set[str] = set()
+        outputs: list[str] = []
+        for item in candidates:
+            mid = item["id"]
+            if mid in seen_ids:
+                continue
+            seen_ids.add(mid)
+            res = self._transcribe_single_audio_item(
+                msg_id=mid,
+                chat_name=item.get("chat") or "Unknown",
+                sender_name=item.get("sender") or "Unknown",
+                timestamp=item.get("timestamp") or "",
+                user_question=user_question,
+            )
+            if res:
+                outputs.append(res)
+                if len(outputs) >= 3:
+                    break
+
+        if outputs:
+            return "\n\n".join(outputs)
+        return "Found matching voice note(s), but could not download them (links may have expired on WhatsApp)."
+
     def _auto_download_media_task(self, msg_id: str) -> None:
         """Background worker task to immediately pre-download an incoming media file while link is fresh."""
         try:
@@ -1245,6 +1415,14 @@ class WhatsAppBot:
         max_bytes = Config.MEDIA_STORAGE_MAX_SIZE_MB * 1024 * 1024 if Config.MEDIA_STORAGE_MAX_SIZE_MB > 0 else 0
 
         while not self._stop_worker_event.is_set():
+            if Config.STATUS_MEDIA_RETENTION_DAYS > 0:
+                try:
+                    pruned = self.db.prune_expired_status_media(Config.STATUS_MEDIA_RETENTION_DAYS)
+                    if pruned:
+                        logger.info("Media Retention: pruned %d expired status file(s) older than %d days.", pruned, Config.STATUS_MEDIA_RETENTION_DAYS)
+                except Exception as pe:
+                    logger.debug("Media Retention check skipped: %s", pe)
+
             if not getattr(self.client, "is_connected", False):
                 if self._stop_worker_event.wait(5.0):
                     break

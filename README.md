@@ -47,12 +47,13 @@ WAmate: 📊 WAmate Second Brain Status
 * 🕒 **Timezone-Accurate Temporal Context & Async Processing:** Injects your live local date/time (`TZ`) into every query so *"today"*, *"yesterday"*, and *"this week"* resolve accurately, while executing AI calls asynchronously so incoming message sync never stalls.
 * ⚡ **Ultra-Fast Batch Indexing (1,000+ msgs/sec):** High-performance SQLite batch engine syncs tens of thousands of past messages in seconds with a live console progress counter.
 * 📄 **Universal File & Document Analysis (`!get` / `!send`):** Automatically extracts and analyzes contents inside all day-to-day shared WhatsApp files: plain text (`.txt`), logs (`.log`), notes (`.md`), Excel (`.xlsx`, `.xls`, `.csv`), Word (`.docx`, `.rtf`, `.odt`), PowerPoint (`.pptx`, `.ppt`), vCard contacts (`.vcf`), calendar events (`.ics`), Jupyter notebooks (`.ipynb`), ZIP archives (`.zip`), source code (`.py`, `.js`, etc.), and PDFs. Gemini can calculate totals, summarize slide decks, inspect tables, and deliver the actual files directly into your chat.
-* 💾 **30-Day Expiration Protection & Zero-Cost Media Storage:** Automatically pre-downloads incoming photos, documents (PDFs, Excel, Word), and voice notes locally to disk with **zero Gemini API calls**. WhatsApp CDN links typically expire after 30 days; by caching files locally while fresh, documents and receipts remain permanently preserved and available for on-demand AI OCR analysis months or years later!
+* 💾 **30-Day Expiration Protection, SHA-256 Deduplication & Compact DB:** Automatically pre-downloads incoming photos, documents, voice notes, and status updates locally to disk with **zero Gemini API calls** and **SHA-256 content deduplication** (duplicate forwards point to one copy on disk). Non-media messages skip raw BLOB storage, and thread-local SQLite connection pooling keeps queries fast.
+* 🔑 **Automatic Multi-Key & Model Rotation (`GEMINI_API_KEYS`):** Configure multiple comma-separated Gemini API keys to automatically rotate past per-key `429` rate limits alongside candidate model fallbacks.
 * 👁️ **Multimodal AI Vision & On-Demand OCR:** Powered by Google Gemini to analyze scanned receipts, handwritten notes, whiteboards, bills, and visual items (clothing colors, objects, payment screenshots) on-demand. Includes an optional **Idle OCR Background Worker** with daily budget capping (`IDLE_OCR_DAILY_BUDGET=50`) that pre-indexes recent photos with rate throttling, caching results permanently in SQLite for **0ms queries with zero API costs**.
 * 🔗 **Link Preview & Web Metadata Search:** Automatically indexes webpage titles, descriptions, and metadata from shared URLs (GitHub repositories, YouTube videos, Amazon/e-commerce products, technical blogs, news articles), making shared links instantly searchable by topic or keyword.
 * 🆔 **Cryptographic WhatsApp LID Resolution:** Automatically cross-references WhatsApp's 15-digit privacy LIDs (`@lid`) against your phone address book, accurately identifying real contact names in group chats.
 * ⏳ **Real-Time Visual Feedback:** Reacts immediately with an hourglass **`⏳`** on your message bubble when a query begins, switching to a checkmark **`✅`** once completed.
-* 🎙️ **Rich Media Aware:** Indexes voice note durations, videos, images, shared vCard contact cards, and polls with their voting options.
+* 🎙️ **Voice Note Transcription & Rich Media Indexing:** On-demand Gemini audio transcription (`transcribe_voice_note`) converts voice notes/audio clips into permanently searchable transcripts cached in SQLite, alongside optional free local CPU OCR (`ENABLE_LOCAL_OCR=true` via system `tesseract`) and indexing of videos, vCard contacts, and polls.
 * 📱 **Native WhatsApp Formatting:** Sanitized for mobile displays using native WhatsApp markdown (`*bold*`, `_italics_`, `• bullets`) with zero broken raw markdown headers or unreadable tables.
 * 🔑 **Dual Pairing Modes:** Supports instant terminal QR code scanning or headless 8-character pairing codes (`ABCD-1234`) for remote VPS and cloud deployments.
 
@@ -85,13 +86,16 @@ You can manage WAmate directly from your terminal:
 # 1. Print indexing and database statistics without starting the bot
 python3 main.py --status
 
-# 2. Unlink account (prompts for confirmation; message history preserved)
+# 2. Prune redundant raw message BLOBs and VACUUM database to reclaim disk space
+python3 main.py --prune-db
+
+# 3. Unlink account (prompts for confirmation; message history preserved)
 python3 main.py --unlink
 
-# 3. Unlink account and wipe all databases and downloaded files
+# 4. Unlink account and wipe all databases and downloaded files
 python3 main.py --unlink --delete-data
 
-# 4. Immediate headless reset (skips confirmation prompt; ideal for Docker/scripts)
+# 5. Immediate headless reset (skips confirmation prompt; ideal for Docker/scripts)
 python3 main.py --reset -y
 ```
 
@@ -170,6 +174,8 @@ Configure your `.env` file:
 ```ini
 # [REQUIRED] Google Gemini API Key
 GEMINI_API_KEY=AIzaSy...your_gemini_api_key_here
+# Optional comma-separated keys for automatic 429 quota rotation across projects
+# GEMINI_API_KEYS=key_1,key_2
 
 # [OPTIONAL] Gemini Model (default: gemini-3.5-flash-lite)
 GEMINI_MODEL=gemini-3.5-flash-lite
@@ -195,6 +201,8 @@ MEDIA_STORAGE_MAX_SIZE_MB=0
 MEDIA_STORAGE_TYPES=all
 MEDIA_STORAGE_INCLUDE_STATUSES=true
 MEDIA_STORAGE_DELAY_SECONDS=1.5
+STATUS_MEDIA_RETENTION_DAYS=0
+ENABLE_LOCAL_OCR=false
 
 # [OPTIONAL] Idle Background OCR Pre-caching (default: false)
 ENABLE_IDLE_OCR=false

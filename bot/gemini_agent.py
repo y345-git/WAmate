@@ -37,7 +37,7 @@ Your primary purpose:
        Call `read_and_ocr_document` (passing `message_id=...` directly if provided in `[Quoted Message Context]`). It automatically reads, extracts, and analyzes content from all day-to-day WhatsApp file types: plain text (.txt, .log), Markdown (.md), Excel (.xlsx, .xls), CSV/TSV, Word (.docx, .doc, .rtf, .odt), PowerPoint (.pptx, .ppt, .odp), vCard contacts (.vcf), calendar events (.ics), Jupyter notebooks (.ipynb), ZIP archives (.zip), code files (.py, .js, .cpp, .java, etc.), and PDFs (including scanned PDFs with Gemini Vision OCR)!
      - *Search only*: Only use `find_documents` when the user explicitly asks to 'list', 'search', or 'check if I have' documents without asking to get or send them.
    - *Quoted / Swipe-Reply Context & Multi-Turn Follow-Ups*:
-     - When `[Quoted Message Context]` is appended to the user's message, the user swipe-replied directly to that specific WhatsApp message or media item. Prioritize inspecting or delivering that exact `Message ID` or quoted content immediately before searching broadly!
+     - When `[Quoted Message Context]` is appended to the user's message, the user swipe-replied directly to that specific WhatsApp message or media item. Prioritize inspecting, transcribing, or delivering that exact `Message ID` or quoted content immediately before searching broadly!
      - Use recent conversation history naturally for follow-up requests (e.g. 'send me the second one', 'what about GST on that?').
    - *Images, Photos, Screenshots & Visual Items (AI Vision OCR)*:
      - When the user asks about an image, photo, receipt, bill photo, payment transfer screenshot, clothes/item color, whiteboard, or visual object shared in chats:
@@ -53,7 +53,10 @@ Your primary purpose:
      - WAmate tracks phone numbers and WhatsApp profile push names for all 1-on-1 direct messages (DMs).
      - Search by phone number (or digits without spaces/country code) using `search_chat_history(contact_or_chat_name=phone_number)` or `search_messages_by_keyword(query=phone_number)`.
    - *Polls & Surveys*: Retrieve poll questions, available choices/options, and settings using `get_polls`.
-   - *Voice Notes, Audio & Media*: Search for voice messages, durations, audio clips, image captions, and videos using `find_voice_notes_and_media`.
+   - *Voice Notes & Audio Transcription*:
+     - When the user asks what someone said in a voice note, audio message, or voice recording (or swipe-replies to one): CALL `transcribe_voice_note`!
+     - `transcribe_voice_note` transcribes the spoken audio (handling English, Hindi, Hinglish, or regional languages cleanly) and caches the transcript permanently for instant future searches.
+   - *Voice Notes, Audio & Media Metadata*: Search for voice messages, durations, audio clips, image captions, and videos using `find_voice_notes_and_media`.
    - *General Message / Topic Search*: Use `search_messages_by_keyword` or `search_chat_history`.
 
 3. STRICT WHATSAPP FORMATTING RULES (MANDATORY):
@@ -81,9 +84,17 @@ Your primary purpose:
 class GeminiAgent:
     """Agent that communicates with Google Gemini and uses tools to query WhatsApp history."""
 
+    CANDIDATE_MODELS = (
+        "gemini-3.5-flash-lite",
+        "gemini-3.6-flash",
+        "gemini-3.5-flash",
+        "gemini-3.1-flash-lite",
+        "gemini-3.8-flash",
+    )
+
     def __init__(
         self,
-        api_key: str,
+        api_key: str | list[str],
         model_name: str,
         db: DatabaseManager,
         bot_client: Any = None,
@@ -91,7 +102,20 @@ class GeminiAgent:
         memory_turns: int = 6,
         memory_ttl_minutes: int = 20,
     ):
-        self.client = genai.Client(api_key=api_key)
+        if isinstance(api_key, str):
+            keys = [k.strip() for k in api_key.split(",") if k.strip()]
+        else:
+            keys = [str(k).strip() for k in api_key if str(k).strip()]
+        if not keys:
+            keys = [""]
+
+        self._api_keys: list[str] = keys
+        self._clients: list[genai.Client] = [genai.Client(api_key=k) for k in self._api_keys]
+        self.client = self._clients[0]
+        self._key_lock = threading.Lock()
+        self._active_key_idx = 0
+        self._key_cooldown_until: dict[int, float] = {}
+
         self.model_name = model_name
         self.db = db
         self.bot_client = bot_client
@@ -102,6 +126,69 @@ class GeminiAgent:
             maxlen=max(1, self.memory_turns) if self.memory_turns > 0 else 1
         )
         self._history_lock = threading.Lock()
+
+    def _get_candidate_models(self) -> list[str]:
+        models = [self.model_name]
+        for m in self.CANDIDATE_MODELS:
+            if m not in models:
+                models.append(m)
+        return models
+
+    def _run_across_keys_and_models(self, fn: Any) -> tuple[Any, Exception | None, bool]:
+        """Execute a Gemini call across configured API keys (cooldown-aware) and fallback models."""
+        candidate_models = self._get_candidate_models()
+        last_error: Exception | None = None
+        quota_exhausted = False
+        now_ts = time.time()
+
+        with self._key_lock:
+            total = len(self._clients)
+            start_idx = self._active_key_idx % max(1, total)
+            ring = [(start_idx + i) % total for i in range(total)]
+            non_cooled = [idx for idx in ring if now_ts >= self._key_cooldown_until.get(idx, 0.0)]
+            cooled = [idx for idx in ring if idx not in non_cooled]
+            ordered_indices = non_cooled + cooled
+
+        for key_idx in ordered_indices:
+            client = self._clients[key_idx]
+            all_rate_limited = True
+
+            for model in candidate_models:
+                try:
+                    result = fn(client, model)
+                    with self._key_lock:
+                        self._active_key_idx = key_idx
+                        self._key_cooldown_until.pop(key_idx, None)
+                    return result, None, False
+                except Exception as e:
+                    err_str = str(e)
+                    last_error = e
+                    is_429 = "RESOURCE_EXHAUSTED" in err_str or "429" in err_str
+                    is_transient = any(
+                        k in err_str for k in ("NOT_FOUND", "404", "UNAVAILABLE", "503", "500", "overloaded")
+                    )
+                    key_label = f"key#{key_idx + 1}" if len(self._clients) > 1 else "primary key"
+                    logger.warning("Gemini request failed on %s / %s: %s", key_label, model, e)
+
+                    if is_429:
+                        quota_exhausted = True
+                        time.sleep(1.5 if len(self._clients) == 1 else 0.5)
+                        continue
+
+                    all_rate_limited = False
+                    if is_transient:
+                        time.sleep(1.5)
+                        continue
+
+                    # Unrecoverable error (invalid argument / malformed payload)
+                    return None, last_error, quota_exhausted
+
+            if all_rate_limited and len(self._clients) > 1:
+                with self._key_lock:
+                    self._key_cooldown_until[key_idx] = time.time() + 300
+                logger.info("All fallback models rate-limited on key#%d; rotating to next API key.", key_idx + 1)
+
+        return None, last_error, quota_exhausted
 
     def clear_history(self) -> int:
         """Clear stored multi-turn conversation memory and return how many turns were removed."""
@@ -157,6 +244,30 @@ class GeminiAgent:
         with self._history_lock:
             self._history.append((time.time(), trimmed_user, trimmed_model))
 
+    def _analyze_media_bytes(
+        self,
+        file_bytes: bytes,
+        mimetype: str,
+        user_prompt: str,
+        empty_msg: str,
+        error_prefix: str,
+    ) -> str:
+        """Analyze raw image, PDF, or audio bytes using shared multi-key/model fallback."""
+        part = types.Part.from_bytes(data=file_bytes, mime_type=mimetype)
+
+        def _invoke(client: genai.Client, model: str) -> str:
+            resp = client.models.generate_content(model=model, contents=[user_prompt, part])
+            if resp and resp.text:
+                return resp.text.strip()
+            return empty_msg
+
+        result, last_error, _ = self._run_across_keys_and_models(_invoke)
+        if result is not None:
+            return result
+
+        logger.exception("%s: %s", error_prefix, last_error)
+        return f"{error_prefix}: {str(last_error)}"
+
     def ocr_file_content(self, file_bytes: bytes, mimetype: str = "application/pdf", prompt: str = "") -> str:
         """Perform multimodal OCR on a scanned PDF, document, or image using Gemini Vision."""
         if not prompt:
@@ -171,36 +282,37 @@ class GeminiAgent:
                 f"You are an expert OCR and visual analysis engine. Examine this document/image carefully. "
                 f"Extract all relevant text, numbers, line items, and visual information to address this specific question: {prompt}"
             )
+        return self._analyze_media_bytes(
+            file_bytes=file_bytes,
+            mimetype=mimetype,
+            user_prompt=user_prompt,
+            empty_msg="OCR analysis completed but returned empty text.",
+            error_prefix="OCR processing error",
+        )
 
-        candidate_models = [self.model_name]
-        for m in ["gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-3.8-flash"]:
-            if m not in candidate_models:
-                candidate_models.append(m)
-
-        part = types.Part.from_bytes(data=file_bytes, mime_type=mimetype)
-        last_error = None
-
-        for model in candidate_models:
-            try:
-                resp = self.client.models.generate_content(
-                    model=model,
-                    contents=[user_prompt, part],
-                )
-                if resp and resp.text:
-                    return resp.text.strip()
-                return "OCR analysis completed but returned empty text."
-            except Exception as e:
-                err_str = str(e)
-                last_error = e
-                logger.warning("OCR failed on model %s: %s", model, e)
-                # If rate-limited (429), model not found (404), or server unavailable/overloaded (503/500), try next model
-                if any(k in err_str for k in ("RESOURCE_EXHAUSTED", "429", "NOT_FOUND", "404", "UNAVAILABLE", "503", "500", "overloaded")):
-                    time.sleep(1.5)
-                    continue
-                break
-
-        logger.exception("Gemini Multimodal OCR failed: %s", last_error)
-        return f"OCR processing error: {str(last_error)}"
+    def transcribe_audio_content(
+        self, audio_bytes: bytes, mimetype: str = "audio/ogg", question: str = ""
+    ) -> str:
+        """Transcribe and summarize a WhatsApp voice note or audio clip using Gemini multimodal audio."""
+        if question:
+            user_prompt = (
+                "Listen carefully to this WhatsApp voice note / audio recording. "
+                "Provide an accurate verbatim transcript in the original language (with brief English translation if non-English), "
+                f"and directly answer this specific question: {question}"
+            )
+        else:
+            user_prompt = (
+                "Listen carefully to this WhatsApp voice note / audio recording. "
+                "Provide a clean, accurate transcript of everything spoken (preserving names, numbers, dates, and action items), "
+                "and add a brief 1-2 line summary of the key takeaway."
+            )
+        return self._analyze_media_bytes(
+            file_bytes=audio_bytes,
+            mimetype=mimetype or "audio/ogg",
+            user_prompt=user_prompt,
+            empty_msg="Audio transcription completed but returned empty text.",
+            error_prefix="Audio transcription error",
+        )
 
     def _build_tools(self) -> list[Any]:
         """Build callable Python tool functions for Gemini."""
@@ -325,6 +437,30 @@ class GeminiAgent:
             """
             return self.db.get_polls(query=query, chat_name_or_jid=contact_or_chat, limit=limit)
 
+        def transcribe_voice_note(
+            message_id: str = "",
+            contact_or_chat: str = "",
+            topic_or_query: str = "",
+            specific_question: str = "",
+        ) -> str:
+            """Transcribe a WhatsApp voice note or audio file and optionally answer a question about it.
+            Use this whenever the user asks what was said in a voice note, audio message, or voice recording.
+
+            Args:
+                message_id: Optional exact WhatsApp message ID if known (e.g. from quoted context or search results).
+                contact_or_chat: Optional contact or chat name where the voice note was sent (e.g. 'Alex', 'Project Group').
+                topic_or_query: Optional keyword or caption filter.
+                specific_question: Optional question about what was spoken in the audio.
+            """
+            if not self.bot_client:
+                return "Voice note transcription is not configured on this bot client."
+            return self.bot_client.transcribe_voice_note(
+                message_id=message_id,
+                contact_or_chat=contact_or_chat,
+                topic_or_query=topic_or_query,
+                user_question=specific_question,
+            )
+
         def find_voice_notes_and_media(
             media_type: str = "voice_note", query: str = "", contact_or_chat: str = "", limit: int = 15
         ) -> list[dict[str, Any]]:
@@ -364,6 +500,7 @@ class GeminiAgent:
             read_and_ocr_document,
             read_document_content,
             inspect_and_ocr_image,
+            transcribe_voice_note,
             find_shared_contacts,
             get_polls,
             find_voice_notes_and_media,
@@ -374,7 +511,7 @@ class GeminiAgent:
         ]
 
     def ask(self, user_query: str, quoted_context: str = "") -> str:
-        """Send the user's query to Gemini with tool calling, runtime date context, and rolling memory."""
+        """Send the user's query to Gemini with tool calling, runtime date context, multi-key rotation, and rolling memory."""
         effective_system_instruction = f"{SYSTEM_PROMPT}\n\n--- LIVE RUNTIME CONTEXT ---\n{self._get_current_time_context()}"
         prompt_to_send = f"{user_query}\n\n{quoted_context}".strip() if quoted_context else user_query
         history_contents = self._get_history_contents()
@@ -391,7 +528,6 @@ class GeminiAgent:
         def _extract_or_synthesize(active_chat: Any, resp: Any) -> str | None:
             if resp and resp.text:
                 return format_for_whatsapp(resp.text.strip())
-            # If AFC reached its limit or ended on a function call without text
             try:
                 logger.info("Empty response text from AFC. Prompting chat for final synthesis...")
                 synth_resp = active_chat.send_message(
@@ -403,55 +539,29 @@ class GeminiAgent:
                 logger.warning("Synthesis prompt failed: %s", synth_err)
             return None
 
-        candidate_models = [self.model_name]
-        for m in ["gemini-3.5-flash-lite", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.1-flash-lite", "gemini-3.8-flash"]:
-            if m not in candidate_models:
-                candidate_models.append(m)
+        def _invoke(client: genai.Client, model: str) -> str | None:
+            chat = client.chats.create(
+                model=model,
+                config=config,
+                history=history_contents or None,
+            )
+            response = chat.send_message(prompt_to_send)
+            return _extract_or_synthesize(chat, response)
 
-        last_error = None
-        quota_exhausted = False
-
-        for model in candidate_models:
-            try:
-                chat = self.client.chats.create(
-                    model=model,
-                    config=config,
-                    history=history_contents or None,
-                )
-                response = chat.send_message(prompt_to_send)
-
-                result = _extract_or_synthesize(chat, response)
-                if result:
-                    self._record_turn(prompt_to_send, result)
-                    return result
-                return "I couldn't retrieve a response from Gemini. Please try again."
-
-            except Exception as e:
-                err_str = str(e)
-                last_error = e
-                logger.warning("Gemini query failed on model %s: %s", model, e)
-
-                if "RESOURCE_EXHAUSTED" in err_str or "429" in err_str:
-                    quota_exhausted = True
-                    # Short pause for momentary RPM bursts before trying next fallback model
-                    time.sleep(2)
-                    continue
-
-                if any(k in err_str for k in ("NOT_FOUND", "404", "UNAVAILABLE", "503", "500", "overloaded")):
-                    logger.info("Model %s unavailable (%s). Trying next fallback model...", model, err_str[:80])
-                    time.sleep(1.5)
-                    continue
-
-                # Unrecoverable error (e.g. invalid argument, bad input)
-                break
+        result, last_error, quota_exhausted = self._run_across_keys_and_models(_invoke)
+        if last_error is None:
+            if result:
+                self._record_turn(prompt_to_send, result)
+                return result
+            return "I couldn't retrieve a response from Gemini. Please try again."
 
         if quota_exhausted:
             return (
                 "⚠️ *Gemini Daily Quota Exceeded (429)*\n\n"
-                "The free-tier limit of 500 requests per day (RPD) has been reached on your Gemini API key across models.\n\n"
-                "• *Reset Time:* Quotas automatically reset daily at 00:00 UTC (05:30 IST).\n"
+                "All configured Gemini API key(s) and fallback models have reached their rate or daily RPD limit.\n\n"
+                "• *Reset Time:* Free-tier daily limits reset at 00:00 UTC (05:30 IST).\n"
                 "• *Background OCR:* Disabled by default to preserve your daily quota for chat queries.\n"
-                "• *Solution:* You can provide a secondary API key or enable pay-as-you-go billing in Google AI Studio."
+                "• *Solution:* Add backup keys via `GEMINI_API_KEYS=key1,key2` in `.env` or enable pay-as-you-go billing in Google AI Studio."
             )
 
         logger.exception("Error during Gemini generation: %s", last_error)

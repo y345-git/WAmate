@@ -142,11 +142,31 @@ def main():
         action="store_true",
         help="Print database and indexing stats then exit",
     )
+    parser.add_argument(
+        "--prune-db",
+        action="store_true",
+        help="Remove redundant raw message BLOBs and VACUUM database to reclaim disk space",
+    )
     args = parser.parse_args()
+
+    if args.prune_db:
+        db = DatabaseManager(Config.MESSAGES_DB_PATH)
+        res = db.prune_redundant_raw_messages(vacuum=True)
+        db.close_all()
+        print("\n" + "=" * 60)
+        print("   WAmate - Database Compaction & Pruning")
+        print("=" * 60)
+        print(f" • Rows Pruned:   {res['rows_pruned']:,}")
+        print(f" • Size Before:   {res['before_mb']} MB")
+        print(f" • Size After:    {res['after_mb']} MB")
+        print(f" • Space Saved:   {res['saved_mb']} MB")
+        print("=" * 60 + "\n")
+        sys.exit(0)
 
     if args.status:
         db = DatabaseManager(Config.MESSAGES_DB_PATH)
         stats = db.get_stats()
+        db.close_all()
 
         stored_mb = 0.0
         if Config.DOWNLOADS_DIR.exists():
@@ -156,17 +176,19 @@ def main():
             except Exception:
                 pass
 
+        dedup_note = f", {stats['dedup_saved_files']} deduped" if stats.get("dedup_saved_files", 0) > 0 else ""
         print("\n" + "=" * 60)
         print("   WAmate - Database & Indexing Status")
         print("=" * 60)
         print(f" • Messages Synced:      {stats['total_messages']:,}")
         print(f" • Contacts & Groups:    {stats['total_contacts']:,} ({stats['total_groups']} groups)")
         print(f" • History Date Range:   {stats['oldest_date']} -> {stats['newest_date']}")
-        print(f" • Stored Media Files:   {stats.get('total_stored_media', 0)} ({stored_mb} MB on disk, 30-day protected)")
+        print(f" • Stored Media Files:   {stats.get('total_stored_media', 0)} ({stored_mb} MB on disk{dedup_note})")
         print(f" • Media Storage Worker: {'Enabled (lookback: ' + str(Config.MEDIA_STORAGE_LOOKBACK_DAYS) + ' days)' if Config.ENABLE_MEDIA_STORAGE else 'Disabled'}")
-        print(f" • OCR Media Cache:      {stats['total_ocr_cached']}")
+        print(f" • OCR & Transcripts:    {stats['total_ocr_cached']}")
         print(f" • Idle OCR Worker:      {'Enabled (lookback: ' + str(Config.IDLE_OCR_LOOKBACK_HOURS) + 'h, budget: ' + str(Config.IDLE_OCR_DAILY_BUDGET) + '/day)' if Config.ENABLE_IDLE_OCR else 'Disabled (On-Demand only)'}")
-        print(f" • Database File Size:   {stats['db_size_mb']} MB")
+        print(f" • Database File Size:   {stats['db_size_mb']} MB (raw BLOB cache: {stats.get('raw_blob_mb', 0.0)} MB)")
+        print(f" • Gemini API Keys:      {len(Config.GEMINI_API_KEYS)} configured")
         print("=" * 60 + "\n")
         sys.exit(0)
 
@@ -222,9 +244,13 @@ def main():
     logger.info("Initializing SQLite database at: %s", Config.MESSAGES_DB_PATH)
     db = DatabaseManager(Config.MESSAGES_DB_PATH)
 
-    logger.info("Initializing Gemini Agent (model: %s)...", Config.GEMINI_MODEL)
+    logger.info(
+        "Initializing Gemini Agent (model: %s, keys: %d)...",
+        Config.GEMINI_MODEL,
+        len(Config.GEMINI_API_KEYS),
+    )
     gemini = GeminiAgent(
-        api_key=Config.GEMINI_API_KEY,
+        api_key=Config.GEMINI_API_KEYS,
         model_name=Config.GEMINI_MODEL,
         db=db,
         timezone_name=Config.TZ,

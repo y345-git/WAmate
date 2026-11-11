@@ -6,9 +6,24 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+def _parse_api_keys() -> list[str]:
+    """Parse GEMINI_API_KEYS (comma-separated) merged with GEMINI_API_KEY, preserving order."""
+    keys: list[str] = []
+    seen: set[str] = set()
+    primary = os.getenv("GEMINI_API_KEY", "").strip()
+    multi = os.getenv("GEMINI_API_KEYS", "")
+    for raw in [primary, *multi.split(",")]:
+        k = raw.strip()
+        if k and k not in seen:
+            seen.add(k)
+            keys.append(k)
+    return keys
+
+
 class Config:
     # Gemini Configuration
-    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "").strip()
+    GEMINI_API_KEYS: list[str] = _parse_api_keys()
+    GEMINI_API_KEY: str = GEMINI_API_KEYS[0] if GEMINI_API_KEYS else ""
     GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite").strip()
     CONVERSATION_MEMORY_TURNS: int = int(os.getenv("CONVERSATION_MEMORY_TURNS", "6"))
     CONVERSATION_MEMORY_TTL_MINUTES: int = int(os.getenv("CONVERSATION_MEMORY_TTL_MINUTES", "20"))
@@ -36,6 +51,8 @@ class Config:
     MEDIA_STORAGE_TYPES: str = os.getenv("MEDIA_STORAGE_TYPES", "all").lower()  # "all" downloads every media type
     MEDIA_STORAGE_INCLUDE_STATUSES: bool = os.getenv("MEDIA_STORAGE_INCLUDE_STATUSES", "true").lower() in ("true", "1", "yes")
     MEDIA_STORAGE_DELAY_SECONDS: float = float(os.getenv("MEDIA_STORAGE_DELAY_SECONDS", "1.5"))
+    STATUS_MEDIA_RETENTION_DAYS: int = int(os.getenv("STATUS_MEDIA_RETENTION_DAYS", "0"))  # 0 = keep forever
+    ENABLE_LOCAL_OCR: bool = os.getenv("ENABLE_LOCAL_OCR", "false").lower() in ("true", "1", "yes")  # Uses system 'tesseract' CLI if installed (0 API calls)
 
     # Idle Background OCR Configuration (Disabled by default to preserve free-tier Gemini API quota)
     ENABLE_IDLE_OCR: bool = os.getenv("ENABLE_IDLE_OCR", "false").lower() in ("true", "1", "yes")
@@ -53,8 +70,8 @@ class Config:
     @classmethod
     def validate(cls) -> None:
         """Validate critical configuration settings."""
-        if not cls.GEMINI_API_KEY:
+        if not cls.GEMINI_API_KEYS:
             raise ValueError(
-                "GEMINI_API_KEY is not set! Please provide your Gemini API key in the .env file or environment."
+                "GEMINI_API_KEY (or GEMINI_API_KEYS) is not set! Please provide your Gemini API key in the .env file or environment."
             )
         cls.ensure_data_dir()

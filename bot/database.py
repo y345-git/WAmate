@@ -2,12 +2,16 @@ import sqlite3
 import json
 import logging
 import re
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+NON_ATTACHMENT_MEDIA_TYPES = ("text", "contact", "poll", "location", "link")
+DOWNLOADABLE_MEDIA_TYPES = ("image", "video", "document", "audio", "voice_note", "sticker")
 
 
 def _format_timestamp(ts: int | None) -> str:
@@ -27,16 +31,42 @@ class DatabaseManager:
 
     def __init__(self, db_path: Path):
         self.db_path = db_path
+        self._local = threading.local()
+        self._conns_lock = threading.Lock()
+        self._all_conns: list[sqlite3.Connection] = []
+        self._pool_generation = 0
         self._init_db()
 
     def _get_connection(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path, timeout=60.0, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        # Enable WAL mode for concurrent read/write and high performance
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA synchronous=NORMAL;")
-        conn.execute("PRAGMA busy_timeout=60000;")
+        conn = getattr(self._local, "conn", None)
+        gen = getattr(self._local, "pool_gen", -1)
+        if conn is None or gen != self._pool_generation:
+            conn = sqlite3.connect(self.db_path, timeout=60.0, check_same_thread=False)
+            conn.row_factory = sqlite3.Row
+            # Enable WAL mode and memory cache once per pooled thread-local connection
+            conn.execute("PRAGMA journal_mode=WAL;")
+            conn.execute("PRAGMA synchronous=NORMAL;")
+            conn.execute("PRAGMA busy_timeout=60000;")
+            conn.execute("PRAGMA temp_store=MEMORY;")
+            conn.execute("PRAGMA cache_size=-16384;")
+            self._local.conn = conn
+            self._local.pool_gen = self._pool_generation
+            with self._conns_lock:
+                self._all_conns.append(conn)
         return conn
+
+    def close_all(self) -> None:
+        """Close all pooled thread-local SQLite connections."""
+        with self._conns_lock:
+            self._pool_generation += 1
+            for c in self._all_conns:
+                try:
+                    c.close()
+                except Exception:
+                    pass
+            self._all_conns.clear()
+        if hasattr(self._local, "conn"):
+            self._local.conn = None
 
     def _init_db(self) -> None:
         """Initialize database schema with contacts, messages, and FTS5 tables."""
@@ -88,6 +118,7 @@ class DatabaseManager:
                 ("media_metadata", "TEXT DEFAULT '{}'"),
                 ("raw_message", "BLOB"),
                 ("local_path", "TEXT"),
+                ("media_hash", "TEXT"),
             ]:
                 if col_name not in existing_cols:
                     conn.execute(f"ALTER TABLE messages ADD COLUMN {col_name} {col_type};")
@@ -98,6 +129,7 @@ class DatabaseManager:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_media_type ON messages(media_type);")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_media_filename ON messages(media_filename);")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_local_path ON messages(local_path);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_media_hash ON messages(media_hash);")
 
             # 3. Full-Text Search Virtual Table (FTS5)
             conn.execute(
@@ -194,6 +226,17 @@ class DatabaseManager:
                   AND (local_path IS NULL OR local_path = '') 
                   AND timestamp < ?
             """, (status_cutoff,))
+
+            # 4. Drop redundant protobuf BLOBs on non-attachments or already-processed rows
+            conn.execute("""
+                UPDATE messages
+                SET raw_message = NULL
+                WHERE raw_message IS NOT NULL
+                  AND (
+                      media_type IN ('text', 'contact', 'poll', 'location', 'link')
+                      OR (local_path IS NOT NULL AND local_path != '')
+                  )
+            """)
 
             conn.commit()
         return updated
@@ -353,7 +396,7 @@ class DatabaseManager:
         WHERE c.msg_id IS NULL
           AND (m.media_type LIKE '%image%' OR m.media_mimetype LIKE 'image/%')
           AND m.timestamp >= ?
-          AND m.raw_message IS NOT NULL
+          AND (m.raw_message IS NOT NULL OR (m.local_path IS NOT NULL AND m.local_path NOT LIKE '[%'))
           {status_filter}
         ORDER BY 
           CASE 
@@ -702,11 +745,144 @@ class DatabaseManager:
                 "local_path": row["local_path"] if "local_path" in row.keys() else None,
             }
 
-    def update_message_local_path(self, msg_id: str, local_path: str) -> None:
-        """Update the stored local filesystem path for a downloaded media message."""
+    def update_message_local_path(
+        self, msg_id: str, local_path: str, media_hash: str | None = None
+    ) -> None:
+        """Record stored local file path (or terminal status marker) and release raw protobuf BLOB."""
         with self._get_connection() as conn:
-            conn.execute("UPDATE messages SET local_path = ? WHERE id = ?", (local_path, msg_id))
+            if media_hash is not None:
+                conn.execute(
+                    "UPDATE messages SET local_path = ?, media_hash = ?, raw_message = NULL WHERE id = ?",
+                    (local_path, media_hash, msg_id),
+                )
+            else:
+                conn.execute(
+                    "UPDATE messages SET local_path = ?, raw_message = NULL WHERE id = ?",
+                    (local_path, msg_id),
+                )
             conn.commit()
+
+    def find_existing_local_path_by_hash(self, media_hash: str) -> str | None:
+        """Check if an identical file (by SHA-256 content hash) already exists cleanly on disk."""
+        if not media_hash:
+            return None
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT local_path FROM messages
+                WHERE media_hash = ?
+                  AND local_path IS NOT NULL
+                  AND local_path NOT LIKE '[%'
+                LIMIT 5
+                """,
+                (media_hash,),
+            ).fetchall()
+        for r in rows:
+            lp = r["local_path"]
+            if lp:
+                p = Path(str(lp))
+                if p.exists() and p.is_file() and p.stat().st_size > 0:
+                    return str(p)
+        return None
+
+    def append_local_search_text(
+        self, msg_id: str, extracted_text: str, marker: str = "[Local Text:"
+    ) -> None:
+        """Append offline CPU-extracted search text to messages.text without occupying media_ocr_cache."""
+        clean_snippet = (extracted_text or "").strip()
+        if not msg_id or not clean_snippet:
+            return
+        with self._get_connection() as conn:
+            row = conn.execute("SELECT text FROM messages WHERE id = ?", (msg_id,)).fetchone()
+            if not row:
+                return
+            current_text = row["text"] or ""
+            if marker in current_text or "[OCR:" in current_text:
+                return
+            capped = clean_snippet[:4000]
+            updated = f"{current_text}\n{marker} {capped}]" if current_text else f"{marker} {capped}]"
+            conn.execute("UPDATE messages SET text = ? WHERE id = ?", (updated, msg_id))
+            conn.commit()
+
+    def prune_redundant_raw_messages(self, vacuum: bool = False) -> dict[str, Any]:
+        """Clear redundant protobuf BLOBs on non-attachments and already-processed media rows."""
+        db_p = Path(self.db_path)
+        before_bytes = db_p.stat().st_size if db_p.exists() else 0
+
+        with self._get_connection() as conn:
+            cur = conn.execute("""
+                UPDATE messages
+                SET raw_message = NULL
+                WHERE raw_message IS NOT NULL
+                  AND (
+                      media_type IN ('text', 'contact', 'poll', 'location', 'link')
+                      OR (local_path IS NOT NULL AND local_path != '')
+                  )
+            """)
+            rows_pruned = cur.rowcount or 0
+            conn.commit()
+
+        if vacuum:
+            # Close pooled connections cleanly so exclusive VACUUM succeeds without lock contention
+            self.close_all()
+            v_conn = sqlite3.connect(self.db_path, timeout=60.0)
+            try:
+                v_conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+                v_conn.execute("VACUUM;")
+                v_conn.commit()
+            finally:
+                v_conn.close()
+
+        after_bytes = db_p.stat().st_size if db_p.exists() else 0
+        before_mb = round(before_bytes / (1024 * 1024), 2)
+        after_mb = round(after_bytes / (1024 * 1024), 2)
+        return {
+            "rows_pruned": rows_pruned,
+            "before_mb": before_mb,
+            "after_mb": after_mb,
+            "saved_mb": round(max(0.0, before_mb - after_mb), 2),
+        }
+
+    def prune_expired_status_media(self, retention_days: int) -> int:
+        """Delete old stored status story files past retention_days if no other message references the file."""
+        if retention_days <= 0:
+            return 0
+        cutoff_ts = int(time.time()) - (retention_days * 86400)
+        removed = 0
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, local_path FROM messages
+                WHERE chat_jid = 'status@broadcast'
+                  AND timestamp < ?
+                  AND local_path IS NOT NULL
+                  AND local_path NOT LIKE '[%'
+                """,
+                (cutoff_ts,),
+            ).fetchall()
+
+            for r in rows:
+                msg_id = r["id"]
+                lp = r["local_path"]
+                ref_count = conn.execute(
+                    "SELECT COUNT(*) FROM messages WHERE local_path = ? AND id != ?",
+                    (lp, msg_id),
+                ).fetchone()[0]
+                if ref_count == 0 and lp:
+                    try:
+                        p = Path(str(lp))
+                        if p.exists() and p.is_file():
+                            p.unlink()
+                    except Exception as e:
+                        logger.debug("Could not remove pruned status file %s: %s", lp, e)
+                conn.execute(
+                    "UPDATE messages SET local_path = '[STATUS_PRUNED]', raw_message = NULL WHERE id = ?",
+                    (msg_id,),
+                )
+                removed += 1
+            if removed:
+                conn.commit()
+        return removed
 
     # -------------------------------------------------------------
     # Gemini Tool Helper Methods
@@ -1295,10 +1471,28 @@ class DatabaseManager:
                 pass
 
             total_stored_media = 0
+            dedup_saved_files = 0
             try:
-                total_stored_media = cursor.execute(
-                    "SELECT COUNT(*) FROM messages WHERE local_path IS NOT NULL AND local_path NOT LIKE '[%'"
+                stored_row = cursor.execute(
+                    """
+                    SELECT COUNT(*), COUNT(DISTINCT local_path)
+                    FROM messages
+                    WHERE local_path IS NOT NULL AND local_path NOT LIKE '[%'
+                    """
+                ).fetchone()
+                total_stored_media = stored_row[0] or 0
+                distinct_stored = stored_row[1] or 0
+                dedup_saved_files = max(0, total_stored_media - distinct_stored)
+            except Exception:
+                pass
+
+            raw_blob_mb = 0.0
+            try:
+                raw_bytes = cursor.execute(
+                    "SELECT SUM(LENGTH(raw_message)) FROM messages WHERE raw_message IS NOT NULL"
                 ).fetchone()[0]
+                if raw_bytes:
+                    raw_blob_mb = round(raw_bytes / (1024 * 1024), 2)
             except Exception:
                 pass
 
@@ -1315,6 +1509,8 @@ class DatabaseManager:
                 "total_groups": total_groups,
                 "total_ocr_cached": total_ocr,
                 "total_stored_media": total_stored_media,
+                "dedup_saved_files": dedup_saved_files,
+                "raw_blob_mb": raw_blob_mb,
                 "oldest_timestamp": oldest_ts,
                 "newest_timestamp": newest_ts,
                 "oldest_date": _format_timestamp(oldest_ts) if oldest_ts else "N/A",
