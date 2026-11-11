@@ -1,9 +1,12 @@
 import base64
+import hashlib
 import hmac
 import json
 import logging
 import mimetypes
 import re
+import shutil
+import subprocess
 import threading
 import urllib.parse
 from http import HTTPStatus
@@ -409,11 +412,75 @@ def _build_html_page(has_ai: bool) -> str:
     justify-content: center;
     overflow: hidden;
     cursor: pointer;
+    position: relative;
   }}
-  .media-tile-preview img {{
+  .media-tile-preview img, .media-tile-preview video {{
     width: 100%;
     height: 100%;
     object-fit: cover;
+  }}
+  .video-thumb-box {{
+    position: relative;
+    display: inline-block;
+    max-width: 240px;
+    margin-top: 8px;
+    cursor: pointer;
+    border-radius: 8px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    background: #0d171d;
+  }}
+  .video-thumb-box img, .video-thumb-box video {{
+    display: block;
+    max-width: 240px;
+    max-height: 170px;
+    min-width: 150px;
+    min-height: 95px;
+    width: 100%;
+    object-fit: cover;
+  }}
+  .video-thumb-box .media-tile-icon {{
+    width: 200px;
+    height: 115px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }}
+  .play-badge {{
+    position: absolute;
+    inset: 0;
+    margin: auto;
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    background: rgba(0, 0, 0, 0.58);
+    border: 1.5px solid rgba(255, 255, 255, 0.8);
+    color: #fff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.1rem;
+    padding-left: 3px;
+    pointer-events: none;
+    transition: transform 0.15s ease, background 0.15s ease;
+  }}
+  .media-tile-preview:hover .play-badge, .video-thumb-box:hover .play-badge {{
+    transform: scale(1.08);
+    background: rgba(0, 168, 132, 0.88);
+    border-color: #fff;
+  }}
+  .kind-chip {{
+    position: absolute;
+    right: 7px;
+    bottom: 7px;
+    background: rgba(0, 0, 0, 0.72);
+    color: #e9edef;
+    font-size: 0.68rem;
+    font-weight: 600;
+    padding: 2px 6px;
+    border-radius: 4px;
+    pointer-events: none;
+    letter-spacing: 0.03em;
   }}
   .media-tile-icon {{
     font-size: 2.3rem;
@@ -641,22 +708,61 @@ function mediaUrl(id, dl=false) {{
   return `/api/media/${{encodeURIComponent(id)}}${{dl ? '?download=1' : ''}}`;
 }}
 
+function videoThumbUrl(id) {{
+  return `/api/video_thumb/${{encodeURIComponent(id)}}`;
+}}
+
+function escArg(s) {{
+  return esc(JSON.stringify(String(s ?? '')));
+}}
+
+function fallbackVideoThumb(imgEl, id) {{
+  if (!imgEl) return;
+  imgEl.onerror = null;
+  const v = document.createElement('video');
+  v.muted = true;
+  v.playsInline = true;
+  v.preload = 'metadata';
+  v.src = `${{mediaUrl(id)}}#t=0.5`;
+  v.onerror = () => {{
+    v.parentElement?.querySelector('.play-badge')?.remove();
+    const icon = document.createElement('div');
+    icon.className = 'media-tile-icon';
+    icon.textContent = '🎬';
+    v.replaceWith(icon);
+  }};
+  imgEl.replaceWith(v);
+}}
+
+function videoThumbMarkup(id) {{
+  return `<img loading="lazy" src="${{videoThumbUrl(id)}}" onerror="fallbackVideoThumb(this,${{escArg(id)}})" /><span class="play-badge">▶</span><span class="kind-chip">VIDEO</span>`;
+}}
+
 function renderMediaSnippet(m) {{
   if (!m.has_local_media) return '';
   const url = mediaUrl(m.id, false);
   const dlUrl = mediaUrl(m.id, true);
   const mt = (m.media_type || '').toLowerCase();
   const mime = (m.media_mimetype || '').toLowerCase();
+  const label = m.media_filename || m.media_type || 'Media';
   let preview = '';
   if (mt === 'image' || mt === 'sticker' || mime.startsWith('image/')) {{
-    preview = `<img class="thumb-img" loading="lazy" src="${{url}}" onclick="openItemModal('${{esc(m.id)}}','${{esc(m.media_filename || m.media_type)}}','image')" />`;
+    preview = `<img class="thumb-img" loading="lazy" src="${{url}}" onclick="openItemModal(${{escArg(m.id)}},${{escArg(label)}},'image')" />`;
   }} else if (mt === 'voice_note' || mt === 'audio' || mime.startsWith('audio/')) {{
     preview = `<audio controls preload="none" src="${{url}}" style="margin-top:8px;max-width:100%"></audio>`;
   }} else if (mt === 'video' || mime.startsWith('video/')) {{
-    preview = `<div class="media-bar"><button class="ghost-btn" onclick="openItemModal('${{esc(m.id)}}','${{esc(m.media_filename || 'Video')}}','video')">▶ Play Video</button><a class="ghost-btn" href="${{dlUrl}}">⬇ Download ${{fmtBytes(m.media_size)}}</a></div>`;
+    const vTitle = m.media_filename || 'Video';
+    preview = `
+      <div class="video-thumb-box" onclick="openItemModal(${{escArg(m.id)}},${{escArg(vTitle)}},'video')" title="Play Video">
+        ${{videoThumbMarkup(m.id)}}
+      </div>
+      <div class="media-bar">
+        <button class="ghost-btn" onclick="openItemModal(${{escArg(m.id)}},${{escArg(vTitle)}},'video')">▶ Play Video</button>
+        <a class="ghost-btn" href="${{dlUrl}}">⬇ Download ${{fmtBytes(m.media_size)}}</a>
+      </div>`;
   }} else {{
     preview = `<div class="media-bar">
-      <button class="ghost-btn" onclick="openDocModal('${{esc(m.id)}}','${{esc(m.media_filename || 'Document')}}')">📄 Preview / Extracted Text</button>
+      <button class="ghost-btn" onclick="openDocModal(${{escArg(m.id)}},${{escArg(m.media_filename || 'Document')}})">📄 Preview / Extracted Text</button>
       <a class="ghost-btn" href="${{url}}" target="_blank">🔗 Open</a>
       <a class="ghost-btn" href="${{dlUrl}}">⬇ Download ${{fmtBytes(m.media_size)}}</a>
     </div>`;
@@ -789,21 +895,27 @@ async function loadMedia(reset=true) {{
       const mt = (m.media_type || '').toLowerCase();
       const mime = (m.media_mimetype || '').toLowerCase();
       const isImg = mt === 'image' || mt === 'sticker' || mime.startsWith('image/');
-      const icon = mt === 'document' ? '📄' : (mt.includes('audio') || mt === 'voice_note' ? '🎙️' : (mt === 'video' ? '🎬' : '📦'));
+      const isVid = mt === 'video' || mime.startsWith('video/');
+      const icon = mt === 'document' ? '📄' : (mt.includes('audio') || mt === 'voice_note' ? '🎙️' : '📦');
       const fname = m.media_filename || `${{m.media_type}}_${{m.id.slice(0,8)}}`;
-      const prev = isImg
-        ? `<img loading="lazy" src="${{mediaUrl(m.id)}}" />`
-        : `<div class="media-tile-icon">${{icon}}</div>`;
+      const modalKind = isImg ? 'image' : (isVid ? 'video' : mt);
+      let prev = `<div class="media-tile-icon">${{icon}}</div>`;
+      if (isImg) prev = `<img loading="lazy" src="${{mediaUrl(m.id)}}" />`;
+      else if (isVid) prev = videoThumbMarkup(m.id);
+      const clickCall = mt === 'document'
+        ? `openDocModal(${{escArg(m.id)}},${{escArg(fname)}})`
+        : `openItemModal(${{escArg(m.id)}},${{escArg(fname)}},${{escArg(modalKind)}})`;
       return `
         <div class="media-tile">
-          <div class="media-tile-preview" onclick="${{mt === 'document' ? `openDocModal('${{esc(m.id)}}','${{esc(fname)}}')` : `openItemModal('${{esc(m.id)}}','${{esc(fname)}}','${{isImg ? 'image' : mt}}')`}}">${{prev}}</div>
+          <div class="media-tile-preview" onclick="${{clickCall}}">${{prev}}</div>
           <div class="media-tile-info">
             <div class="media-tile-title" title="${{esc(fname)}}">${{esc(fname)}}</div>
             <div class="muted">${{esc(m.chat_name)}} · ${{fmtBytes(m.media_size)}}</div>
             <div class="muted">${{esc(m.timestamp_str)}}</div>
             <div class="media-bar">
               <a class="ghost-btn" href="${{mediaUrl(m.id, true)}}">⬇ Save</a>
-              ${{mt === 'document' ? `<button class="ghost-btn" onclick="openDocModal('${{esc(m.id)}}','${{esc(fname)}}')">Text</button>` : ''}}
+              ${{isVid ? `<button class="ghost-btn" onclick="${{clickCall}}">▶ Play</button>` : ''}}
+              ${{mt === 'document' ? `<button class="ghost-btn" onclick="openDocModal(${{escArg(m.id)}},${{escArg(fname)}})">Text</button>` : ''}}
             </div>
           </div>
         </div>
@@ -851,6 +963,14 @@ document.getElementById('vaultRefreshBtn').addEventListener('click', loadVault);
 document.getElementById('vaultMode').addEventListener('change', loadVault);
 
 // Modals
+document.getElementById('previewDialog').addEventListener('close', () => {{
+  const mb = document.getElementById('modalBody');
+  mb.querySelectorAll('video, audio').forEach(el => {{
+    try {{ el.pause(); el.removeAttribute('src'); el.load(); }} catch (_) {{}}
+  }});
+  mb.innerHTML = '';
+}});
+
 function openItemModal(id, title, kind) {{
   const dlg = document.getElementById('previewDialog');
   document.getElementById('modalTitle').textContent = title;
@@ -858,7 +978,7 @@ function openItemModal(id, title, kind) {{
   const dl = mediaUrl(id, true);
   let body = '';
   if (kind === 'image' || kind === 'sticker') body = `<img src="${{u}}" style="max-width:100%;border-radius:8px" />`;
-  else if (kind === 'video') body = `<video controls autoplay src="${{u}}" style="max-width:100%;max-height:60vh;border-radius:8px"></video>`;
+  else if (kind === 'video') body = `<video controls autoplay playsinline poster="${{videoThumbUrl(id)}}" src="${{u}}" style="width:100%;max-width:100%;max-height:60vh;border-radius:8px;background:#000"></video>`;
   else if (kind === 'audio' || kind === 'voice_note') body = `<audio controls autoplay src="${{u}}" style="width:100%"></audio>`;
   else body = `<iframe src="${{u}}" style="width:100%;height:60vh;border:none;background:#fff;border-radius:8px"></iframe>`;
   document.getElementById('modalBody').innerHTML = `${{body}}<div class="media-bar"><a class="ghost-btn" href="${{dl}}">⬇ Download Original</a></div>`;
@@ -945,6 +1065,10 @@ class WebUIServer:
         self.gemini = gemini
         self.bot_client = bot_client
         self.downloads_dir = (downloads_dir or Config.DOWNLOADS_DIR).resolve()
+        self.thumbs_dir = (self.downloads_dir.parent / "thumbs").resolve()
+        self._thumb_sem = threading.Semaphore(2)
+        self._thumb_locks_guard = threading.Lock()
+        self._thumb_locks: dict[str, threading.Lock] = {}
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
@@ -952,6 +1076,88 @@ class WebUIServer:
     def is_running(self) -> bool:
         """Return True while the HTTP server socket is actively bound and serving."""
         return self._server is not None
+
+    @staticmethod
+    def _extract_video_frame_ffmpeg(ffmpeg_bin: str, video_path: Path, out_path: Path) -> bool:
+        """Extract one scaled JPEG frame from video_path via ffmpeg, writing atomically to out_path."""
+        tmp_path = out_path.with_name(f"{out_path.stem}.{threading.get_ident()}.tmp.jpg")
+        try:
+            for seek_sec in ("0.5", "0"):
+                cmd = [
+                    ffmpeg_bin,
+                    "-nostdin",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-ss",
+                    seek_sec,
+                    "-i",
+                    str(video_path),
+                    "-frames:v",
+                    "1",
+                    "-vf",
+                    "scale='min(480,iw)':-2",
+                    "-q:v",
+                    "4",
+                    "-y",
+                    str(tmp_path),
+                ]
+                proc = subprocess.run(
+                    cmd,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE,
+                    timeout=15,
+                    check=False,
+                )
+                if proc.returncode == 0 and tmp_path.is_file() and tmp_path.stat().st_size > 0:
+                    tmp_path.replace(out_path)
+                    return True
+                if tmp_path.exists():
+                    tmp_path.unlink(missing_ok=True)
+            return False
+        except Exception as exc:
+            logger.debug("Video thumbnail extraction failed for %s: %s", video_path.name, exc)
+            return False
+        finally:
+            if tmp_path.exists():
+                tmp_path.unlink(missing_ok=True)
+
+    def _get_or_create_video_thumbnail(self, file_path: Path) -> bytes | None:
+        """Return cached JPEG thumbnail bytes for a local video file, generating on demand with ffmpeg."""
+        try:
+            stat = file_path.stat()
+        except OSError:
+            return None
+
+        key_src = f"{file_path}:{stat.st_size}:{stat.st_mtime_ns}".encode("utf-8")
+        cache_key = hashlib.sha256(key_src).hexdigest()[:24]
+        thumb_path = self.thumbs_dir / f"{cache_key}.jpg"
+
+        if thumb_path.is_file() and thumb_path.stat().st_size > 0:
+            return thumb_path.read_bytes()
+
+        ffmpeg_bin = shutil.which("ffmpeg")
+        if not ffmpeg_bin:
+            return None
+
+        with self._thumb_locks_guard:
+            lock = self._thumb_locks.get(cache_key)
+            if lock is None:
+                # Bound lock map growth cleanly on long-running servers
+                if len(self._thumb_locks) > 512:
+                    self._thumb_locks.clear()
+                lock = threading.Lock()
+                self._thumb_locks[cache_key] = lock
+
+        with lock:
+            if thumb_path.is_file() and thumb_path.stat().st_size > 0:
+                return thumb_path.read_bytes()
+            self.thumbs_dir.mkdir(parents=True, exist_ok=True)
+            with self._thumb_sem:
+                if not self._extract_video_frame_ffmpeg(ffmpeg_bin, file_path, thumb_path):
+                    return None
+            return thumb_path.read_bytes() if thumb_path.is_file() else None
 
     def _build_handler(self):
         parent = self
@@ -1163,6 +1369,34 @@ class WebUIServer:
                         msg_id = urllib.parse.unquote(path[len("/api/media/"):]).strip("/")
                         force_dl = _bool_param(qs.get("download", ["0"])[0])
                         self._serve_media(msg_id, force_download=force_dl)
+                        return
+
+                    if path.startswith("/api/video_thumb/"):
+                        msg_id = urllib.parse.unquote(path[len("/api/video_thumb/"):]).strip("/")
+                        info, file_path = self._resolve_safe_media_path(msg_id)
+                        if not info or not file_path:
+                            self._send_json({"error": "Video file not found on disk"}, status=404)
+                            return
+                        mt = (info.get("media_type") or "").lower()
+                        mime = (info.get("media_mimetype") or "").lower()
+                        is_vid = (
+                            mt == "video"
+                            or mime.startswith("video/")
+                            or file_path.suffix.lower() in {".mp4", ".mov", ".mkv", ".webm", ".3gp", ".avi", ".m4v"}
+                        )
+                        if not is_vid:
+                            self._send_json({"error": "Not a video file"}, status=400)
+                            return
+                        jpg = parent._get_or_create_video_thumbnail(file_path)
+                        if not jpg:
+                            self._send_json({"error": "Video thumbnail unavailable"}, status=404)
+                            return
+                        self._send_bytes(
+                            200,
+                            "image/jpeg",
+                            jpg,
+                            extra_headers={"Cache-Control": "private, max-age=86400"},
+                        )
                         return
 
                     if path.startswith("/api/doc_preview/"):
