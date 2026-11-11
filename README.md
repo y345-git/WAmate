@@ -49,7 +49,7 @@ WAmate: 📊 WAmate Second Brain Status
 * 📄 **Universal File & Document Analysis (`!get` / `!send`):** Automatically extracts and analyzes contents inside all day-to-day shared WhatsApp files: plain text (`.txt`), logs (`.log`), notes (`.md`), Excel (`.xlsx`, `.xls`, `.csv`), Word (`.docx`, `.rtf`, `.odt`), PowerPoint (`.pptx`, `.ppt`), vCard contacts (`.vcf`), calendar events (`.ics`), Jupyter notebooks (`.ipynb`), ZIP archives (`.zip`), source code (`.py`, `.js`, etc.), and PDFs. Gemini can calculate totals, summarize slide decks, inspect tables, and deliver the actual files directly into your chat.
 * 💾 **30-Day Expiration Protection, SHA-256 Deduplication & Compact DB:** Automatically pre-downloads incoming photos, documents, voice notes, and status updates locally to disk with **zero Gemini API calls** and **SHA-256 content deduplication** (duplicate forwards point to one copy on disk). Non-media messages skip raw BLOB storage, and thread-local SQLite connection pooling keeps queries fast.
 * 🔑 **Automatic Multi-Key & Model Rotation (`GEMINI_API_KEYS`):** Configure multiple comma-separated Gemini API keys to automatically rotate past per-key `429` rate limits alongside candidate model fallbacks.
-* 👁️ **Multimodal AI Vision & On-Demand OCR:** Powered by Google Gemini to analyze scanned receipts, handwritten notes, whiteboards, bills, and visual items (clothing colors, objects, payment screenshots) on-demand. Includes an optional **Idle OCR Background Worker** with daily budget capping (`IDLE_OCR_DAILY_BUDGET=50`) that pre-indexes recent photos with rate throttling, caching results permanently in SQLite for **0ms queries with zero API costs**.
+* 👁️ **Multimodal AI Vision & On-Demand OCR:** Powered by Google Gemini to analyze scanned receipts, handwritten notes, whiteboards, bills, and visual items (clothing colors, objects, payment screenshots) on-demand whenever you ask, caching results permanently in SQLite for **0ms repeat queries with zero extra API calls**.
 * 🔗 **Link Preview & Web Metadata Search:** Automatically indexes webpage titles, descriptions, and metadata from shared URLs (GitHub repositories, YouTube videos, Amazon/e-commerce products, technical blogs, news articles), making shared links instantly searchable by topic or keyword.
 * 🆔 **Cryptographic WhatsApp LID Resolution:** Automatically cross-references WhatsApp's 15-digit privacy LIDs (`@lid`) against your phone address book, accurately identifying real contact names in group chats.
 * ⏳ **Real-Time Visual Feedback:** Reacts immediately with an hourglass **`⏳`** on your message bubble when a query begins, switching to a checkmark **`✅`** once completed.
@@ -202,15 +202,9 @@ MEDIA_STORAGE_TYPES=all
 MEDIA_STORAGE_INCLUDE_STATUSES=true
 MEDIA_STORAGE_DELAY_SECONDS=1.5
 STATUS_MEDIA_RETENTION_DAYS=0
-ENABLE_LOCAL_OCR=false
 
-# [OPTIONAL] Idle Background OCR Pre-caching (default: false)
-ENABLE_IDLE_OCR=false
-IDLE_OCR_LOOKBACK_HOURS=48
-IDLE_OCR_DELAY_SECONDS=12
-IDLE_OCR_MAX_PER_RUN=100
-IDLE_OCR_DAILY_BUDGET=50
-IDLE_OCR_INCLUDE_STATUSES=false
+# [OPTIONAL] Local CPU Background OCR (0 Gemini API calls; requires: sudo apt install -y tesseract-ocr)
+ENABLE_LOCAL_OCR=false
 ```
 
 ---

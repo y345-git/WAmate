@@ -62,11 +62,11 @@ class WhatsAppBot:
         # Link Gemini agent back to this bot client for document sending & extraction tools
         self.gemini.bot_client = self
 
-        # Idle Background OCR Worker synchronization & state
+        # Background workers synchronization & state
         self._stop_worker_event = threading.Event()
         self._user_active_event = threading.Event()
-        self._idle_worker_thread: threading.Thread | None = None
-        self._idle_worker_stats = {"processed": 0, "last_active": None}
+        self._local_ocr_thread: threading.Thread | None = None
+        self._local_ocr_stats = {"processed": 0, "last_active": None}
 
         # Media Storage Worker & Auto-Download (Zero Gemini API Cost - keeps media accessible after 30 days)
         self._media_storage_thread: threading.Thread | None = None
@@ -630,11 +630,7 @@ class WhatsAppBot:
 
             stats = self.db.get_stats()
             sync_state = "Fully indexed & Real-time active ✅" if getattr(self, "history_sync_completed", False) else "Indexed (Real-time active) ✅"
-            idle_state = (
-                f"Active 🟢 ({self._idle_worker_stats['processed']} pre-cached, budget: {Config.IDLE_OCR_DAILY_BUDGET}/day)"
-                if Config.ENABLE_IDLE_OCR
-                else "Disabled (On-Demand only ⚡)"
-            )
+            local_ocr_state = Config.describe_local_ocr(stats.get("total_local_ocr", 0))
 
             # Compute disk usage of stored media files
             stored_mb = 0.0
@@ -661,8 +657,8 @@ class WhatsAppBot:
                 f"• *Contacts & Groups:* {stats['total_contacts']:,} ({stats['total_groups']} groups)\n"
                 f"• *History Date Range:* {stats['oldest_date']} → {stats['newest_date']}\n"
                 f"• *Stored Media (30-day safe 💾):* {storage_state}\n"
-                f"• *OCR & Transcript Cache:* {stats['total_ocr_cached']}\n"
-                f"• *Idle OCR Worker:* {idle_state}\n"
+                f"• *AI Vision & Voice OCR:* On-Demand ⚡ ({stats['total_ocr_cached']} cached)\n"
+                f"• *Local CPU OCR:* {local_ocr_state}\n"
                 f"• *Database Size:* {stats['db_size_mb']} MB\n"
                 f"• *Sync Status:* {sync_state}\n"
                 f"• *AI Model:* `{Config.GEMINI_MODEL}` ({key_count} API key{'s' if key_count != 1 else ''})\n\n"
@@ -1229,18 +1225,39 @@ class WhatsAppBot:
 
         return "Found matching images, but could not download them from WhatsApp servers (links may have expired)."
 
-    def _maybe_index_local_ocr(self, msg_id: str, file_path: str, mimetype: str) -> None:
-        """Optionally run zero-API-cost offline tesseract OCR on downloaded images to enrich FTS5 text."""
+    def _maybe_index_local_ocr(
+        self,
+        msg_id: str,
+        file_path: str,
+        mimetype: str,
+        path_cache: dict[str, str] | None = None,
+    ) -> bool:
+        """Run zero-API-cost offline tesseract OCR on stored image files and mark completion in DB."""
         if not Config.ENABLE_LOCAL_OCR:
-            return
-        if not mimetype or not mimetype.lower().startswith("image/"):
-            return
-        tesseract_bin = getattr(self, "_tesseract_bin_cache", None)
-        if tesseract_bin is None:
-            tesseract_bin = shutil.which("tesseract") or ""
-            self._tesseract_bin_cache = tesseract_bin
+            return False
+        ext = os.path.splitext(file_path)[1].lower() if file_path else ""
+        is_image = bool(
+            (mimetype and mimetype.lower().startswith("image/"))
+            or ext in {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
+        )
+        if not is_image:
+            return False
+        if not file_path or not os.path.exists(file_path):
+            self.db.mark_local_ocr_done(msg_id, "")
+            return False
+        tesseract_bin = Config.get_tesseract_path()
         if not tesseract_bin:
-            return
+            return False
+
+        if path_cache is not None and file_path in path_cache:
+            cleaned = path_cache[file_path]
+            self.db.mark_local_ocr_done(msg_id, cleaned)
+            if len(cleaned) >= 8:
+                self._local_ocr_stats["processed"] += 1
+                self._local_ocr_stats["last_active"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                return True
+            return False
+
         try:
             proc = subprocess.run(
                 [tesseract_bin, file_path, "stdout", "--psm", "6"],
@@ -1248,13 +1265,19 @@ class WhatsAppBot:
                 text=True,
                 timeout=15,
             )
-            if proc.returncode == 0 and proc.stdout:
-                cleaned = " ".join(proc.stdout.split())
-                if len(cleaned) >= 8:
-                    self.db.append_local_search_text(msg_id, cleaned)
-                    logger.debug("Indexed local CPU OCR text (%d chars) for %s", len(cleaned), msg_id)
+            cleaned = " ".join(proc.stdout.split()) if proc.returncode == 0 and proc.stdout else ""
+            if path_cache is not None:
+                path_cache[file_path] = cleaned
+            self.db.mark_local_ocr_done(msg_id, cleaned)
+            if len(cleaned) >= 8:
+                self._local_ocr_stats["processed"] += 1
+                self._local_ocr_stats["last_active"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                logger.debug("Indexed local CPU OCR text (%d chars) for %s", len(cleaned), msg_id)
+                return True
         except Exception as e:
             logger.debug("Local tesseract OCR skipped for %s: %s", msg_id, e)
+            self.db.mark_local_ocr_done(msg_id, "")
+        return False
 
     def _transcribe_single_audio_item(
         self,
@@ -1500,201 +1523,84 @@ class WhatsAppBot:
             if self._stop_worker_event.wait(30.0):
                 break
 
-    def _start_idle_ocr_worker(self) -> None:
-        """Launch the background idle OCR worker thread if enabled."""
-        if not Config.ENABLE_IDLE_OCR:
-            logger.info("Idle Background OCR is disabled (ENABLE_IDLE_OCR=false).")
+    def _start_local_ocr_worker(self) -> None:
+        """Launch zero-API-cost Local CPU OCR backfill worker if enabled and tesseract is installed."""
+        if not Config.ENABLE_LOCAL_OCR:
+            logger.info(
+                "Local CPU OCR disabled (ENABLE_LOCAL_OCR=false). On-Demand AI Vision & Voice OCR remains active during '!ask' queries."
+            )
             return
 
-        if self._idle_worker_thread and self._idle_worker_thread.is_alive():
+        tesseract_bin = Config.get_tesseract_path()
+        if not tesseract_bin:
+            logger.warning(
+                "ENABLE_LOCAL_OCR=true, but 'tesseract' binary was not found in PATH! "
+                "Local CPU OCR is paused. Install it on Ubuntu/Debian via: sudo apt update && sudo apt install -y tesseract-ocr "
+                "(On-Demand Gemini Vision OCR still works during '!ask' queries.)"
+            )
+            return
+
+        if self._local_ocr_thread and self._local_ocr_thread.is_alive():
             return
 
         self._stop_worker_event.clear()
-        self._idle_worker_thread = threading.Thread(
-            target=self._idle_ocr_worker, daemon=True, name="IdleOCRWorker"
+        self._local_ocr_thread = threading.Thread(
+            target=self._local_ocr_worker, daemon=True, name="LocalOCRWorker"
         )
-        self._idle_worker_thread.start()
+        self._local_ocr_thread.start()
         logger.info(
-            "Idle Background OCR Worker started (lookback: %dh, delay: %ds, max/cycle: %d, daily budget: %d).",
-            Config.IDLE_OCR_LOOKBACK_HOURS,
-            Config.IDLE_OCR_DELAY_SECONDS,
-            Config.IDLE_OCR_MAX_PER_RUN,
-            Config.IDLE_OCR_DAILY_BUDGET,
+            "Local CPU OCR Worker started (binary: %s, 0 Gemini API calls).",
+            tesseract_bin,
         )
 
-    def _idle_ocr_worker(self) -> None:
-        """Background thread that pre-caches OCR analysis for recent images while idle."""
-        logger.info("Idle OCR worker active. Waiting 20s for connection warmup...")
-        # Warmup delay
-        if self._stop_worker_event.wait(20.0):
+    def _local_ocr_worker(self) -> None:
+        """Background thread that gently backfills offline tesseract OCR text for stored images."""
+        logger.info("Local CPU OCR worker active. Waiting 25s for startup warmup...")
+        if self._stop_worker_event.wait(25.0):
             return
 
-        current_day = datetime.now().date()
-        daily_ocr_count = 0
-
+        path_cache: dict[str, str] = {}
         while not self._stop_worker_event.is_set():
-            today = datetime.now().date()
-            if today != current_day:
-                current_day = today
-                daily_ocr_count = 0
-                logger.info("Idle OCR: Daily quota budget reset for new day (%s).", current_day)
-
-            # Check if daily budget has been reached
-            if daily_ocr_count >= Config.IDLE_OCR_DAILY_BUDGET:
-                logger.info(
-                    "Idle OCR: Daily quota budget reached (%d/%d requests today). Pausing background worker until midnight.",
-                    daily_ocr_count,
-                    Config.IDLE_OCR_DAILY_BUDGET,
-                )
-                if self._stop_worker_event.wait(1800.0):
-                    break
-                continue
-            # If client is not connected, wait
-            if not getattr(self.client, "is_connected", False):
-                if self._stop_worker_event.wait(5.0):
-                    break
-                continue
-
-            # If user is currently issuing commands in self-chat, yield immediately
             if self._user_active_event.is_set():
                 if self._stop_worker_event.wait(3.0):
                     break
                 continue
 
-            # Fetch uncached candidates from the last lookback_hours (strictly prioritizing self-chat, DMs, and groups before statuses)
             try:
-                candidates = self.db.get_uncached_media_candidates(
-                    lookback_hours=Config.IDLE_OCR_LOOKBACK_HOURS,
-                    limit=Config.IDLE_OCR_MAX_PER_RUN,
-                    include_statuses=Config.IDLE_OCR_INCLUDE_STATUSES,
+                candidates = self.db.get_local_ocr_candidates(
+                    limit=50,
                     self_jid=self.my_canonical_jid or "",
                 )
             except Exception as e:
-                logger.warning("Idle OCR: error querying uncached candidates: %s", e)
+                logger.warning("Local CPU OCR: error querying candidates: %s", e)
                 candidates = []
 
             if not candidates:
-                # No candidates to process; sleep 60s before checking again
                 if self._stop_worker_event.wait(60.0):
                     break
                 continue
 
-            logger.info(
-                "Idle OCR Worker found %d uncached media item(s) from past %d hours.",
-                len(candidates),
-                Config.IDLE_OCR_LOOKBACK_HOURS,
-            )
+            logger.info("Local CPU OCR batch: scanning %d stored image(s) offline...", len(candidates))
+            if len(path_cache) > 2000:
+                path_cache.clear()
 
-            processed_in_cycle = 0
             for item in candidates:
                 if self._stop_worker_event.is_set():
                     break
-
-                # If user starts querying, pause immediately and yield
                 while self._user_active_event.is_set():
-                    logger.debug("Idle OCR paused: user is actively querying self-chat.")
                     if self._stop_worker_event.wait(3.0):
                         break
-
                 if self._stop_worker_event.is_set():
                     break
 
                 msg_id = item["id"]
-                chat_name = item.get("chat_name") or item.get("chat_jid") or "Unknown"
-                sender_name = item.get("sender_name") or "Unknown"
+                file_path = item.get("local_path") or ""
                 mimetype = item.get("media_mimetype") or "image/jpeg"
+                self._maybe_index_local_ocr(msg_id, file_path, mimetype, path_cache=path_cache)
 
-                # Check if already cached (could have been processed on-demand)
-                if self.db.get_ocr_cache(msg_id):
-                    continue
-
-                # Attempt to download image bytes
-                file_path, real_filename, detected_mimetype, err = self.download_media_by_id(msg_id)
-                if err or not file_path:
-                    err_str = str(err).lower()
-                    if any(k in err_str for k in ["410", "expired", "payload", "empty"]):
-                        self.db.save_ocr_cache(msg_id, "[MEDIA_EXPIRED]", mimetype=mimetype)
-                        logger.debug("Idle OCR: Marked expired image %s as [MEDIA_EXPIRED]", msg_id)
-                    else:
-                        self.db.save_ocr_cache(msg_id, "[OCR_SKIPPED]", mimetype=mimetype)
-                        logger.debug("Idle OCR: Skipping un-downloadable media %s (%s)", msg_id, err)
-                    continue
-
-                try:
-                    with open(file_path, "rb") as f:
-                        img_bytes = f.read()
-
-                    if not img_bytes:
-                        self.db.save_ocr_cache(msg_id, "[MEDIA_EXPIRED]", mimetype=mimetype)
-                        continue
-
-                    prompt = (
-                        "Transcribe and visually describe all content, objects, text, tables, and colors in this image in detail:\n"
-                        "1. Full text transcription (headings, labels, receipts, handwritten notes, printed text, numbers, codes, prices, dates, totals).\n"
-                        "2. Visual objects & scene description (items, products, clothing types/colors/patterns, devices, documents, people, locations).\n"
-                        "3. Key details (brands, logos, model numbers, payment/transaction IDs, addresses, status indicators).\n"
-                        "Keep it structured and concise for search indexing."
-                    )
-
-                    analysis = self.gemini.ocr_file_content(
-                        img_bytes, mimetype=detected_mimetype or mimetype, prompt=prompt
-                    )
-
-                    if analysis and not analysis.startswith("OCR processing error"):
-                        self.db.save_ocr_cache(msg_id, analysis, mimetype=detected_mimetype or mimetype)
-                        processed_in_cycle += 1
-                        daily_ocr_count += 1
-                        self._idle_worker_stats["processed"] += 1
-                        self._idle_worker_stats["last_active"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        chat_jid = item.get("chat_jid") or ""
-                        is_group = bool(item.get("is_group"))
-                        chat_type = "DM" if not is_group else "Group"
-                        if chat_jid == "status@broadcast":
-                            chat_type = "Status Story"
-                        elif chat_jid == self.my_canonical_jid or chat_jid == getattr(self, "my_lid_jid", ""):
-                            chat_type = "Self-Chat"
-
-                        logger.info(
-                            "Idle OCR: Pre-cached %s image %s from '%s' (%d/%d in cycle, %d/%d today).",
-                            chat_type,
-                            msg_id,
-                            chat_name,
-                            processed_in_cycle,
-                            len(candidates),
-                            daily_ocr_count,
-                            Config.IDLE_OCR_DAILY_BUDGET,
-                        )
-
-                        if daily_ocr_count >= Config.IDLE_OCR_DAILY_BUDGET:
-                            logger.info(
-                                "Idle OCR: Reached daily budget limit (%d/%d requests). Stopping cycle.",
-                                daily_ocr_count,
-                                Config.IDLE_OCR_DAILY_BUDGET,
-                            )
-                            break
-                    else:
-                        logger.warning("Idle OCR: Gemini returned error or empty for %s: %s", msg_id, analysis)
-                        err_text = (analysis or "").lower()
-                        if "resource_exhausted" in err_text or "429" in err_text or "quota" in err_text:
-                            logger.warning(
-                                "Idle OCR: Rate limit / daily quota reached (%s). Pausing idle background worker for 2 hours to protect user queries.",
-                                analysis,
-                            )
-                            if self._stop_worker_event.wait(7200.0):
-                                break
-                            break
-                        time.sleep(5.0)
-
-                except Exception as ex:
-                    logger.warning("Idle OCR error on image %s: %s", msg_id, ex)
-
-                # Rate-limit delay before processing next item
-                if self._stop_worker_event.wait(float(Config.IDLE_OCR_DELAY_SECONDS)):
+                # Yield CPU slightly between local OCR calls
+                if self._stop_worker_event.wait(0.25):
                     break
-
-            # Sleep 60 seconds between scan cycles
-            if self._stop_worker_event.wait(60.0):
-                break
 
     def stop(self) -> None:
         """Stop background workers and disconnect the WhatsApp client."""
@@ -1702,8 +1608,8 @@ class WhatsAppBot:
         self._stop_worker_event.set()
         if self._media_storage_thread and self._media_storage_thread.is_alive():
             self._media_storage_thread.join(timeout=2.0)
-        if self._idle_worker_thread and self._idle_worker_thread.is_alive():
-            self._idle_worker_thread.join(timeout=2.0)
+        if self._local_ocr_thread and self._local_ocr_thread.is_alive():
+            self._local_ocr_thread.join(timeout=2.0)
         try:
             self._media_executor.shutdown(wait=False)
         except Exception:
@@ -1744,8 +1650,8 @@ class WhatsAppBot:
         # Launch media storage pre-download worker (Zero Gemini API Cost - keeps media accessible after 30 days)
         self._start_media_storage_worker()
 
-        # Launch idle background OCR pre-caching worker (if manually enabled)
-        self._start_idle_ocr_worker()
+        # Launch zero-API Local CPU OCR backfill worker (if ENABLE_LOCAL_OCR=true & tesseract installed)
+        self._start_local_ocr_worker()
 
         logger.info("Starting WhatsApp client connection...")
         self.client.connect()
@@ -1761,8 +1667,8 @@ class WhatsAppBot:
                 pass
         if self._media_storage_thread and self._media_storage_thread.is_alive():
             self._media_storage_thread.join(timeout=2.0)
-        if self._idle_worker_thread and self._idle_worker_thread.is_alive():
-            self._idle_worker_thread.join(timeout=2.0)
+        if self._local_ocr_thread and self._local_ocr_thread.is_alive():
+            self._local_ocr_thread.join(timeout=2.0)
 
         # 1. Server-side logout via neonize
         try:

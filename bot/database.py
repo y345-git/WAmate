@@ -119,6 +119,7 @@ class DatabaseManager:
                 ("raw_message", "BLOB"),
                 ("local_path", "TEXT"),
                 ("media_hash", "TEXT"),
+                ("local_ocr_done", "INTEGER DEFAULT 0"),
             ]:
                 if col_name not in existing_cols:
                     conn.execute(f"ALTER TABLE messages ADD COLUMN {col_name} {col_type};")
@@ -130,6 +131,7 @@ class DatabaseManager:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_media_filename ON messages(media_filename);")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_local_path ON messages(local_path);")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_media_hash ON messages(media_hash);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_local_ocr ON messages(local_ocr_done);")
 
             # 3. Full-Text Search Virtual Table (FTS5)
             conn.execute(
@@ -372,34 +374,22 @@ class DatabaseManager:
                         conn.execute("UPDATE messages SET text = ? WHERE id = ?", (updated_text, msg_id))
             conn.commit()
 
-    def get_uncached_media_candidates(
+    def get_local_ocr_candidates(
         self,
-        lookback_hours: int = 48,
         limit: int = 50,
-        include_statuses: bool = False,
         self_jid: str = "",
     ) -> list[dict[str, Any]]:
-        """Fetch un-cached media messages within lookback_hours, strictly prioritizing:
-        1. Self-chat messages / notes to self
-        2. Direct 1-on-1 Messages (DMs with contacts or unsaved numbers)
-        3. Group chats & Announcements
-        4. WhatsApp Status Stories (only if include_statuses is True, processed last)
-        """
-        cutoff_ts = int(time.time()) - (lookback_hours * 3600)
-        status_filter = "" if include_statuses else "AND m.chat_jid != 'status@broadcast'"
-        sql = f"""
-        SELECT m.id, m.chat_jid, m.sender_jid, m.timestamp, m.text, 
-               m.media_type, m.media_filename, m.media_mimetype,
-               m.chat_name, m.sender_name, m.is_group
+        """Fetch stored image messages not yet scanned by local CPU OCR, prioritizing self-chat, DMs, groups, then statuses."""
+        sql = """
+        SELECT m.id, m.chat_jid, m.sender_jid, m.timestamp, m.local_path,
+               m.media_type, m.media_mimetype, m.chat_name, m.sender_name, m.is_group
         FROM messages m
-        LEFT JOIN media_ocr_cache c ON m.id = c.msg_id
-        WHERE c.msg_id IS NULL
+        WHERE COALESCE(m.local_ocr_done, 0) = 0
+          AND m.local_path IS NOT NULL
+          AND m.local_path NOT LIKE '[%'
           AND (m.media_type LIKE '%image%' OR m.media_mimetype LIKE 'image/%')
-          AND m.timestamp >= ?
-          AND (m.raw_message IS NOT NULL OR (m.local_path IS NOT NULL AND m.local_path NOT LIKE '[%'))
-          {status_filter}
-        ORDER BY 
-          CASE 
+        ORDER BY
+          CASE
             WHEN m.chat_jid = ? OR m.sender_jid = ? THEN 1             -- Self-chat
             WHEN m.is_group = 0 AND m.chat_jid != 'status@broadcast' THEN 2 -- Direct 1-on-1 chats (DMs)
             WHEN m.is_group = 1 THEN 3                                 -- Group chats & announcements
@@ -410,7 +400,7 @@ class DatabaseManager:
         LIMIT ?
         """
         with self._get_connection() as conn:
-            rows = conn.execute(sql, (cutoff_ts, self_jid, self_jid, limit)).fetchall()
+            rows = conn.execute(sql, (self_jid, self_jid, limit)).fetchall()
             return [dict(r) for r in rows]
 
     def get_unstored_media_candidates(
@@ -785,23 +775,27 @@ class DatabaseManager:
                     return str(p)
         return None
 
-    def append_local_search_text(
-        self, msg_id: str, extracted_text: str, marker: str = "[Local Text:"
+    def mark_local_ocr_done(
+        self, msg_id: str, extracted_text: str = "", marker: str = "[Local Text:"
     ) -> None:
-        """Append offline CPU-extracted search text to messages.text without occupying media_ocr_cache."""
-        clean_snippet = (extracted_text or "").strip()
-        if not msg_id or not clean_snippet:
+        """Mark image as locally OCR-scanned and append extracted text to messages.text if meaningful."""
+        if not msg_id:
             return
+        clean_snippet = (extracted_text or "").strip()
         with self._get_connection() as conn:
             row = conn.execute("SELECT text FROM messages WHERE id = ?", (msg_id,)).fetchone()
             if not row:
                 return
             current_text = row["text"] or ""
-            if marker in current_text or "[OCR:" in current_text:
-                return
-            capped = clean_snippet[:4000]
-            updated = f"{current_text}\n{marker} {capped}]" if current_text else f"{marker} {capped}]"
-            conn.execute("UPDATE messages SET text = ? WHERE id = ?", (updated, msg_id))
+            if len(clean_snippet) >= 8 and marker not in current_text and "[OCR:" not in current_text:
+                capped = clean_snippet[:4000]
+                updated = f"{current_text}\n{marker} {capped}]" if current_text else f"{marker} {capped}]"
+                conn.execute(
+                    "UPDATE messages SET text = ?, local_ocr_done = 1 WHERE id = ?",
+                    (updated, msg_id),
+                )
+            else:
+                conn.execute("UPDATE messages SET local_ocr_done = 1 WHERE id = ?", (msg_id,))
             conn.commit()
 
     def prune_redundant_raw_messages(self, vacuum: bool = False) -> dict[str, Any]:
@@ -1496,6 +1490,14 @@ class DatabaseManager:
             except Exception:
                 pass
 
+            total_local_ocr = 0
+            try:
+                total_local_ocr = cursor.execute(
+                    "SELECT COUNT(*) FROM messages WHERE local_ocr_done = 1"
+                ).fetchone()[0] or 0
+            except Exception:
+                pass
+
             oldest_ts = cursor.execute("SELECT MIN(timestamp) FROM messages WHERE timestamp > 0").fetchone()[0]
             newest_ts = cursor.execute("SELECT MAX(timestamp) FROM messages WHERE timestamp > 0").fetchone()[0]
 
@@ -1508,6 +1510,7 @@ class DatabaseManager:
                 "total_contacts": total_contacts,
                 "total_groups": total_groups,
                 "total_ocr_cached": total_ocr,
+                "total_local_ocr": total_local_ocr,
                 "total_stored_media": total_stored_media,
                 "dedup_saved_files": dedup_saved_files,
                 "raw_blob_mb": raw_blob_mb,

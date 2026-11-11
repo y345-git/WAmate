@@ -1,4 +1,5 @@
 import os
+import shutil
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -52,15 +53,26 @@ class Config:
     MEDIA_STORAGE_INCLUDE_STATUSES: bool = os.getenv("MEDIA_STORAGE_INCLUDE_STATUSES", "true").lower() in ("true", "1", "yes")
     MEDIA_STORAGE_DELAY_SECONDS: float = float(os.getenv("MEDIA_STORAGE_DELAY_SECONDS", "1.5"))
     STATUS_MEDIA_RETENTION_DAYS: int = int(os.getenv("STATUS_MEDIA_RETENTION_DAYS", "0"))  # 0 = keep forever
-    ENABLE_LOCAL_OCR: bool = os.getenv("ENABLE_LOCAL_OCR", "false").lower() in ("true", "1", "yes")  # Uses system 'tesseract' CLI if installed (0 API calls)
 
-    # Idle Background OCR Configuration (Disabled by default to preserve free-tier Gemini API quota)
-    ENABLE_IDLE_OCR: bool = os.getenv("ENABLE_IDLE_OCR", "false").lower() in ("true", "1", "yes")
-    IDLE_OCR_LOOKBACK_HOURS: int = int(os.getenv("IDLE_OCR_LOOKBACK_HOURS", "48"))
-    IDLE_OCR_DELAY_SECONDS: int = int(os.getenv("IDLE_OCR_DELAY_SECONDS", "12"))
-    IDLE_OCR_MAX_PER_RUN: int = int(os.getenv("IDLE_OCR_MAX_PER_RUN", "100"))
-    IDLE_OCR_DAILY_BUDGET: int = int(os.getenv("IDLE_OCR_DAILY_BUDGET", "50"))
-    IDLE_OCR_INCLUDE_STATUSES: bool = os.getenv("IDLE_OCR_INCLUDE_STATUSES", "false").lower() in ("true", "1", "yes")
+    # Local CPU Background OCR (0 Gemini API calls; uses system 'tesseract' CLI on stored images)
+    # Note: On-Demand AI Vision, PDF, and Voice Note OCR via Gemini is ALWAYS enabled during '!ask' queries.
+    ENABLE_LOCAL_OCR: bool = os.getenv("ENABLE_LOCAL_OCR", "false").lower() in ("true", "1", "yes")
+
+    @staticmethod
+    def get_tesseract_path() -> str | None:
+        """Return path to the system tesseract binary if installed, else None."""
+        return shutil.which("tesseract")
+
+    @classmethod
+    def describe_local_ocr(cls, scanned_count: int | None = None, concise: bool = False) -> str:
+        """Return consistent human-readable status for Local CPU OCR across !status and --status."""
+        if not cls.ENABLE_LOCAL_OCR:
+            return "Disabled"
+        if not cls.get_tesseract_path():
+            return "Missing 'tesseract' ⚠️ (run: sudo apt install -y tesseract-ocr)"
+        suffix = f" ({scanned_count:,} scanned, 0 API cost)" if scanned_count is not None else " (0 API cost)"
+        prefix = "Enabled" if concise else "Active 🟢"
+        return f"{prefix}{suffix}"
 
     @classmethod
     def ensure_data_dir(cls) -> None:
