@@ -54,9 +54,12 @@ class Config:
     MEDIA_STORAGE_DELAY_SECONDS: float = float(os.getenv("MEDIA_STORAGE_DELAY_SECONDS", "1.5"))
     STATUS_MEDIA_RETENTION_DAYS: int = int(os.getenv("STATUS_MEDIA_RETENTION_DAYS", "0"))  # 0 = keep forever
 
-    # Local CPU Background OCR (0 Gemini API calls; uses system 'tesseract' CLI on stored images)
+    # Local CPU Background Indexing (0 Gemini API calls)
+    # - ENABLE_LOCAL_OCR: uses system 'tesseract' CLI on stored images
+    # - ENABLE_LOCAL_DOC_INDEX: uses pure-Python extractors on stored PDFs, Excel, Word, PowerPoint, CSV, and text files
     # Note: On-Demand AI Vision, PDF, and Voice Note OCR via Gemini is ALWAYS enabled during '!ask' queries.
     ENABLE_LOCAL_OCR: bool = os.getenv("ENABLE_LOCAL_OCR", "false").lower() in ("true", "1", "yes")
+    ENABLE_LOCAL_DOC_INDEX: bool = os.getenv("ENABLE_LOCAL_DOC_INDEX", "true").lower() in ("true", "1", "yes")
 
     @staticmethod
     def get_tesseract_path() -> str | None:
@@ -71,6 +74,15 @@ class Config:
         if not cls.get_tesseract_path():
             return "Missing 'tesseract' ⚠️ (run: sudo apt install -y tesseract-ocr)"
         suffix = f" ({scanned_count:,} scanned, 0 API cost)" if scanned_count is not None else " (0 API cost)"
+        prefix = "Enabled" if concise else "Active 🟢"
+        return f"{prefix}{suffix}"
+
+    @classmethod
+    def describe_local_doc_index(cls, indexed_count: int | None = None, concise: bool = False) -> str:
+        """Return consistent human-readable status for Local Document Text Indexing across !status and --status."""
+        if not cls.ENABLE_LOCAL_DOC_INDEX:
+            return "Disabled"
+        suffix = f" ({indexed_count:,} indexed, 0 API cost)" if indexed_count is not None else " (0 API cost)"
         prefix = "Enabled" if concise else "Active 🟢"
         return f"{prefix}{suffix}"
 

@@ -187,6 +187,7 @@ def main():
         print(f" • Media Storage Worker: {'Enabled (lookback: ' + str(Config.MEDIA_STORAGE_LOOKBACK_DAYS) + ' days)' if Config.ENABLE_MEDIA_STORAGE else 'Disabled'}")
         print(f" • AI Vision & Voice OCR: On-Demand ⚡ ({stats['total_ocr_cached']} cached)")
         print(f" • Local CPU OCR:        {Config.describe_local_ocr(stats.get('total_local_ocr', 0), concise=True)}")
+        print(f" • Local Doc Index:      {Config.describe_local_doc_index(stats.get('total_local_docs', 0), concise=True)}")
         print(f" • Database File Size:   {stats['db_size_mb']} MB (raw BLOB cache: {stats.get('raw_blob_mb', 0.0)} MB)")
         print(f" • Gemini API Keys:      {len(Config.GEMINI_API_KEYS)} configured")
         print("=" * 60 + "\n")

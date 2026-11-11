@@ -120,6 +120,7 @@ class DatabaseManager:
                 ("local_path", "TEXT"),
                 ("media_hash", "TEXT"),
                 ("local_ocr_done", "INTEGER DEFAULT 0"),
+                ("local_doc_done", "INTEGER DEFAULT 0"),
             ]:
                 if col_name not in existing_cols:
                     conn.execute(f"ALTER TABLE messages ADD COLUMN {col_name} {col_type};")
@@ -132,6 +133,7 @@ class DatabaseManager:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_local_path ON messages(local_path);")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_media_hash ON messages(media_hash);")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_local_ocr ON messages(local_ocr_done);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_local_doc ON messages(local_doc_done);")
 
             # 3. Full-Text Search Virtual Table (FTS5)
             conn.execute(
@@ -374,20 +376,24 @@ class DatabaseManager:
                         conn.execute("UPDATE messages SET text = ? WHERE id = ?", (updated_text, msg_id))
             conn.commit()
 
-    def get_local_ocr_candidates(
+    def _get_local_index_candidates(
         self,
+        done_column: str,
+        media_filter_sql: str,
         limit: int = 50,
         self_jid: str = "",
     ) -> list[dict[str, Any]]:
-        """Fetch stored image messages not yet scanned by local CPU OCR, prioritizing self-chat, DMs, groups, then statuses."""
-        sql = """
+        """Shared candidate query for offline background indexers (Self-Chat -> DMs -> Groups -> Statuses)."""
+        if done_column not in {"local_ocr_done", "local_doc_done"}:
+            raise ValueError(f"Invalid local index column: {done_column}")
+        sql = f"""
         SELECT m.id, m.chat_jid, m.sender_jid, m.timestamp, m.local_path,
-               m.media_type, m.media_mimetype, m.chat_name, m.sender_name, m.is_group
+               m.media_type, m.media_mimetype, m.media_filename, m.chat_name, m.sender_name, m.is_group
         FROM messages m
-        WHERE COALESCE(m.local_ocr_done, 0) = 0
+        WHERE COALESCE(m.{done_column}, 0) = 0
           AND m.local_path IS NOT NULL
           AND m.local_path NOT LIKE '[%'
-          AND (m.media_type LIKE '%image%' OR m.media_mimetype LIKE 'image/%')
+          AND {media_filter_sql}
         ORDER BY
           CASE
             WHEN m.chat_jid = ? OR m.sender_jid = ? THEN 1             -- Self-chat
@@ -402,6 +408,32 @@ class DatabaseManager:
         with self._get_connection() as conn:
             rows = conn.execute(sql, (self_jid, self_jid, limit)).fetchall()
             return [dict(r) for r in rows]
+
+    def get_local_ocr_candidates(
+        self,
+        limit: int = 50,
+        self_jid: str = "",
+    ) -> list[dict[str, Any]]:
+        """Fetch stored image messages not yet scanned by local CPU OCR."""
+        return self._get_local_index_candidates(
+            done_column="local_ocr_done",
+            media_filter_sql="(m.media_type LIKE '%image%' OR m.media_mimetype LIKE 'image/%')",
+            limit=limit,
+            self_jid=self_jid,
+        )
+
+    def get_local_doc_candidates(
+        self,
+        limit: int = 50,
+        self_jid: str = "",
+    ) -> list[dict[str, Any]]:
+        """Fetch stored document messages not yet text-indexed locally."""
+        return self._get_local_index_candidates(
+            done_column="local_doc_done",
+            media_filter_sql="m.media_type = 'document'",
+            limit=limit,
+            self_jid=self_jid,
+        )
 
     def get_unstored_media_candidates(
         self,
@@ -775,10 +807,18 @@ class DatabaseManager:
                     return str(p)
         return None
 
-    def mark_local_ocr_done(
-        self, msg_id: str, extracted_text: str = "", marker: str = "[Local Text:"
+    def _mark_local_index_done(
+        self,
+        msg_id: str,
+        done_column: str,
+        extracted_text: str = "",
+        marker: str = "[Local Text:",
+        min_len: int = 8,
+        max_chars: int = 4000,
     ) -> None:
-        """Mark image as locally OCR-scanned and append extracted text to messages.text if meaningful."""
+        """Shared helper to mark local OCR/Doc indexing done and append searchable text to messages.text."""
+        if done_column not in {"local_ocr_done", "local_doc_done"}:
+            raise ValueError(f"Invalid local index column: {done_column}")
         if not msg_id:
             return
         clean_snippet = (extracted_text or "").strip()
@@ -787,16 +827,42 @@ class DatabaseManager:
             if not row:
                 return
             current_text = row["text"] or ""
-            if len(clean_snippet) >= 8 and marker not in current_text and "[OCR:" not in current_text:
-                capped = clean_snippet[:4000]
+            if len(clean_snippet) >= min_len and marker not in current_text and "[OCR:" not in current_text:
+                capped = clean_snippet[:max_chars]
                 updated = f"{current_text}\n{marker} {capped}]" if current_text else f"{marker} {capped}]"
                 conn.execute(
-                    "UPDATE messages SET text = ?, local_ocr_done = 1 WHERE id = ?",
+                    f"UPDATE messages SET text = ?, {done_column} = 1 WHERE id = ?",
                     (updated, msg_id),
                 )
             else:
-                conn.execute("UPDATE messages SET local_ocr_done = 1 WHERE id = ?", (msg_id,))
+                conn.execute(f"UPDATE messages SET {done_column} = 1 WHERE id = ?", (msg_id,))
             conn.commit()
+
+    def mark_local_ocr_done(
+        self, msg_id: str, extracted_text: str = "", marker: str = "[Local Text:"
+    ) -> None:
+        """Mark image as locally OCR-scanned and append extracted text to messages.text if meaningful."""
+        self._mark_local_index_done(
+            msg_id=msg_id,
+            done_column="local_ocr_done",
+            extracted_text=extracted_text,
+            marker=marker,
+            min_len=8,
+            max_chars=4000,
+        )
+
+    def mark_local_doc_done(
+        self, msg_id: str, extracted_text: str = "", marker: str = "[Doc Text:"
+    ) -> None:
+        """Mark document as locally text-indexed and append searchable snippet to messages.text if meaningful."""
+        self._mark_local_index_done(
+            msg_id=msg_id,
+            done_column="local_doc_done",
+            extracted_text=extracted_text,
+            marker=marker,
+            min_len=20,
+            max_chars=6000,
+        )
 
     def prune_redundant_raw_messages(self, vacuum: bool = False) -> dict[str, Any]:
         """Clear redundant protobuf BLOBs on non-attachments and already-processed media rows."""
@@ -1225,6 +1291,9 @@ class DatabaseManager:
                     else:
                         filename = "Shared Document (Synced before rich media update)"
 
+                raw_caption = r["text"] or ""
+                if len(raw_caption) > 600:
+                    raw_caption = raw_caption[:600].rstrip() + "..."
                 results.append(
                     {
                         "id": r["id"],
@@ -1234,7 +1303,7 @@ class DatabaseManager:
                         "chat": r["chat_name"] or r["chat_jid"],
                         "sender": sender,
                         "timestamp": _format_timestamp(r["timestamp"]),
-                        "caption_or_text": r["text"],
+                        "caption_or_text": raw_caption,
                     }
                 )
             return results
@@ -1491,10 +1560,19 @@ class DatabaseManager:
                 pass
 
             total_local_ocr = 0
+            total_local_docs = 0
             try:
-                total_local_ocr = cursor.execute(
-                    "SELECT COUNT(*) FROM messages WHERE local_ocr_done = 1"
-                ).fetchone()[0] or 0
+                counts_row = cursor.execute(
+                    """
+                    SELECT
+                        COALESCE(SUM(CASE WHEN local_ocr_done = 1 THEN 1 ELSE 0 END), 0),
+                        COALESCE(SUM(CASE WHEN local_doc_done = 1 THEN 1 ELSE 0 END), 0)
+                    FROM messages
+                    """
+                ).fetchone()
+                if counts_row:
+                    total_local_ocr = counts_row[0] or 0
+                    total_local_docs = counts_row[1] or 0
             except Exception:
                 pass
 
@@ -1511,6 +1589,7 @@ class DatabaseManager:
                 "total_groups": total_groups,
                 "total_ocr_cached": total_ocr,
                 "total_local_ocr": total_local_ocr,
+                "total_local_docs": total_local_docs,
                 "total_stored_media": total_stored_media,
                 "dedup_saved_files": dedup_saved_files,
                 "raw_blob_mb": raw_blob_mb,

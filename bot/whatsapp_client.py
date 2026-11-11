@@ -21,11 +21,13 @@ from .config import Config
 from .database import DatabaseManager, DOWNLOADABLE_MEDIA_TYPES, _format_timestamp
 from .gemini_agent import GeminiAgent
 from .utils import (
+    LOCAL_DOC_INDEXABLE_EXTS,
     MessageDeduplicator,
     RichMessageInfo,
     extract_rich_message_info,
     extract_document_text,
     format_for_whatsapp,
+    is_meaningful_extracted_doc_text,
     jid_to_str,
     clean_phone_number,
     normalize_timestamp,
@@ -65,8 +67,8 @@ class WhatsAppBot:
         # Background workers synchronization & state
         self._stop_worker_event = threading.Event()
         self._user_active_event = threading.Event()
-        self._local_ocr_thread: threading.Thread | None = None
-        self._local_ocr_stats = {"processed": 0, "last_active": None}
+        self._local_index_thread: threading.Thread | None = None
+        self._local_index_stats = {"ocr_processed": 0, "doc_processed": 0, "last_active": None}
 
         # Media Storage Worker & Auto-Download (Zero Gemini API Cost - keeps media accessible after 30 days)
         self._media_storage_thread: threading.Thread | None = None
@@ -631,6 +633,7 @@ class WhatsAppBot:
             stats = self.db.get_stats()
             sync_state = "Fully indexed & Real-time active ✅" if getattr(self, "history_sync_completed", False) else "Indexed (Real-time active) ✅"
             local_ocr_state = Config.describe_local_ocr(stats.get("total_local_ocr", 0))
+            local_doc_state = Config.describe_local_doc_index(stats.get("total_local_docs", 0))
 
             # Compute disk usage of stored media files
             stored_mb = 0.0
@@ -659,6 +662,7 @@ class WhatsAppBot:
                 f"• *Stored Media (30-day safe 💾):* {storage_state}\n"
                 f"• *AI Vision & Voice OCR:* On-Demand ⚡ ({stats['total_ocr_cached']} cached)\n"
                 f"• *Local CPU OCR:* {local_ocr_state}\n"
+                f"• *Local Doc Index:* {local_doc_state}\n"
                 f"• *Database Size:* {stats['db_size_mb']} MB\n"
                 f"• *Sync Status:* {sync_state}\n"
                 f"• *AI Model:* `{Config.GEMINI_MODEL}` ({key_count} API key{'s' if key_count != 1 else ''})\n\n"
@@ -882,7 +886,7 @@ class WhatsAppBot:
             if existing_path:
                 self.db.update_message_local_path(msg_id, existing_path, media_hash=file_hash)
                 logger.info("Deduplicated media file (SHA-256 match) for %s -> %s", msg_id, existing_path)
-                self._maybe_index_local_ocr(msg_id, existing_path, mimetype)
+                self._maybe_index_local_media(msg_id, existing_path, mimetype)
                 return existing_path, filename, mimetype, None
 
             with open(file_path, "wb") as f:
@@ -890,7 +894,7 @@ class WhatsAppBot:
 
             self.db.update_message_local_path(msg_id, str(file_path), media_hash=file_hash)
             logger.info("Successfully downloaded media file: %s (%d bytes)", file_path, len(binary_data))
-            self._maybe_index_local_ocr(msg_id, str(file_path), mimetype)
+            self._maybe_index_local_media(msg_id, str(file_path), mimetype)
             return str(file_path), filename, mimetype, None
         except Exception as e:
             err_str = str(e).strip()
@@ -1253,8 +1257,8 @@ class WhatsAppBot:
             cleaned = path_cache[file_path]
             self.db.mark_local_ocr_done(msg_id, cleaned)
             if len(cleaned) >= 8:
-                self._local_ocr_stats["processed"] += 1
-                self._local_ocr_stats["last_active"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                self._local_index_stats["ocr_processed"] += 1
+                self._local_index_stats["last_active"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 return True
             return False
 
@@ -1270,14 +1274,73 @@ class WhatsAppBot:
                 path_cache[file_path] = cleaned
             self.db.mark_local_ocr_done(msg_id, cleaned)
             if len(cleaned) >= 8:
-                self._local_ocr_stats["processed"] += 1
-                self._local_ocr_stats["last_active"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                self._local_index_stats["ocr_processed"] += 1
+                self._local_index_stats["last_active"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 logger.debug("Indexed local CPU OCR text (%d chars) for %s", len(cleaned), msg_id)
                 return True
         except Exception as e:
             logger.debug("Local tesseract OCR skipped for %s: %s", msg_id, e)
             self.db.mark_local_ocr_done(msg_id, "")
         return False
+
+    def _maybe_index_local_doc(
+        self,
+        msg_id: str,
+        file_path: str,
+        path_cache: dict[str, str] | None = None,
+    ) -> bool:
+        """Run zero-API-cost pure-Python text extraction on stored documents and mark completion in DB."""
+        if not Config.ENABLE_LOCAL_DOC_INDEX:
+            return False
+        if not file_path or not os.path.exists(file_path):
+            self.db.mark_local_doc_done(msg_id, "")
+            return False
+        ext = os.path.splitext(file_path)[1].lower()
+        if ext not in LOCAL_DOC_INDEXABLE_EXTS:
+            self.db.mark_local_doc_done(msg_id, "")
+            return False
+        try:
+            if os.path.getsize(file_path) > 25 * 1024 * 1024:
+                self.db.mark_local_doc_done(msg_id, "")
+                return False
+        except OSError:
+            self.db.mark_local_doc_done(msg_id, "")
+            return False
+
+        if path_cache is not None and file_path in path_cache:
+            cleaned = path_cache[file_path]
+            self.db.mark_local_doc_done(msg_id, cleaned)
+            if len(cleaned) >= 20:
+                self._local_index_stats["doc_processed"] += 1
+                self._local_index_stats["last_active"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                return True
+            return False
+
+        try:
+            raw_text = extract_document_text(file_path, max_chars=8000)
+            cleaned = " ".join(raw_text.split()) if is_meaningful_extracted_doc_text(raw_text) else ""
+            if path_cache is not None:
+                path_cache[file_path] = cleaned
+            self.db.mark_local_doc_done(msg_id, cleaned)
+            if len(cleaned) >= 20:
+                self._local_index_stats["doc_processed"] += 1
+                self._local_index_stats["last_active"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                logger.debug("Indexed local document text (%d chars) for %s", len(cleaned), msg_id)
+                return True
+        except Exception as e:
+            logger.debug("Local document indexing skipped for %s: %s", msg_id, e)
+            self.db.mark_local_doc_done(msg_id, "")
+        return False
+
+    def _maybe_index_local_media(self, msg_id: str, file_path: str, mimetype: str) -> None:
+        """Index newly downloaded image or document locally without spending Gemini quota."""
+        ext = os.path.splitext(file_path)[1].lower() if file_path else ""
+        if (mimetype and mimetype.lower().startswith("image/")) or ext in {
+            ".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"
+        }:
+            self._maybe_index_local_ocr(msg_id, file_path, mimetype)
+        elif ext in LOCAL_DOC_INDEXABLE_EXTS:
+            self._maybe_index_local_doc(msg_id, file_path)
 
     def _transcribe_single_audio_item(
         self,
@@ -1523,39 +1586,44 @@ class WhatsAppBot:
             if self._stop_worker_event.wait(30.0):
                 break
 
-    def _start_local_ocr_worker(self) -> None:
-        """Launch zero-API-cost Local CPU OCR backfill worker if enabled and tesseract is installed."""
-        if not Config.ENABLE_LOCAL_OCR:
-            logger.info(
-                "Local CPU OCR disabled (ENABLE_LOCAL_OCR=false). On-Demand AI Vision & Voice OCR remains active during '!ask' queries."
-            )
-            return
+    def _start_local_index_worker(self) -> None:
+        """Launch zero-API-cost Local Background Indexing worker for stored images and documents."""
+        tesseract_bin = Config.get_tesseract_path() if Config.ENABLE_LOCAL_OCR else None
+        ocr_ready = bool(Config.ENABLE_LOCAL_OCR and tesseract_bin)
+        doc_ready = bool(Config.ENABLE_LOCAL_DOC_INDEX)
 
-        tesseract_bin = Config.get_tesseract_path()
-        if not tesseract_bin:
+        if Config.ENABLE_LOCAL_OCR and not tesseract_bin:
             logger.warning(
                 "ENABLE_LOCAL_OCR=true, but 'tesseract' binary was not found in PATH! "
-                "Local CPU OCR is paused. Install it on Ubuntu/Debian via: sudo apt update && sudo apt install -y tesseract-ocr "
+                "Image CPU OCR is paused. Install it on Ubuntu/Debian via: sudo apt update && sudo apt install -y tesseract-ocr "
                 "(On-Demand Gemini Vision OCR still works during '!ask' queries.)"
             )
+        elif not Config.ENABLE_LOCAL_OCR:
+            logger.info(
+                "Local CPU Image OCR disabled (ENABLE_LOCAL_OCR=false). On-Demand AI Vision & Voice OCR remains active during '!ask' queries."
+            )
+
+        if not ocr_ready and not doc_ready:
+            logger.info("Local Document Text Indexing disabled (ENABLE_LOCAL_DOC_INDEX=false).")
             return
 
-        if self._local_ocr_thread and self._local_ocr_thread.is_alive():
+        if self._local_index_thread and self._local_index_thread.is_alive():
             return
 
         self._stop_worker_event.clear()
-        self._local_ocr_thread = threading.Thread(
-            target=self._local_ocr_worker, daemon=True, name="LocalOCRWorker"
+        self._local_index_thread = threading.Thread(
+            target=self._local_index_worker, daemon=True, name="LocalIndexWorker"
         )
-        self._local_ocr_thread.start()
+        self._local_index_thread.start()
         logger.info(
-            "Local CPU OCR Worker started (binary: %s, 0 Gemini API calls).",
-            tesseract_bin,
+            "Local Background Index Worker started (image_ocr=%s, doc_index=%s, 0 Gemini API calls).",
+            "ON" if ocr_ready else "OFF",
+            "ON" if doc_ready else "OFF",
         )
 
-    def _local_ocr_worker(self) -> None:
-        """Background thread that gently backfills offline tesseract OCR text for stored images."""
-        logger.info("Local CPU OCR worker active. Waiting 25s for startup warmup...")
+    def _local_index_worker(self) -> None:
+        """Background thread that gently backfills offline image OCR and local document text for stored files."""
+        logger.info("Local Background Index worker active. Waiting 25s for startup warmup...")
         if self._stop_worker_event.wait(25.0):
             return
 
@@ -1566,25 +1634,41 @@ class WhatsAppBot:
                     break
                 continue
 
-            try:
-                candidates = self.db.get_local_ocr_candidates(
-                    limit=50,
-                    self_jid=self.my_canonical_jid or "",
-                )
-            except Exception as e:
-                logger.warning("Local CPU OCR: error querying candidates: %s", e)
-                candidates = []
+            tesseract_bin = Config.get_tesseract_path() if Config.ENABLE_LOCAL_OCR else None
+            ocr_candidates: list[dict[str, Any]] = []
+            doc_candidates: list[dict[str, Any]] = []
 
-            if not candidates:
+            if tesseract_bin:
+                try:
+                    ocr_candidates = self.db.get_local_ocr_candidates(
+                        limit=25, self_jid=self.my_canonical_jid or ""
+                    )
+                except Exception as e:
+                    logger.warning("Local CPU OCR: error querying candidates: %s", e)
+
+            if Config.ENABLE_LOCAL_DOC_INDEX:
+                try:
+                    doc_candidates = self.db.get_local_doc_candidates(
+                        limit=25, self_jid=self.my_canonical_jid or ""
+                    )
+                except Exception as e:
+                    logger.warning("Local Doc Index: error querying candidates: %s", e)
+
+            if not ocr_candidates and not doc_candidates:
                 if self._stop_worker_event.wait(60.0):
                     break
                 continue
 
-            logger.info("Local CPU OCR batch: scanning %d stored image(s) offline...", len(candidates))
+            logger.info(
+                "Local Background Index batch: %d image(s), %d document(s) queued offline...",
+                len(ocr_candidates),
+                len(doc_candidates),
+            )
             if len(path_cache) > 2000:
                 path_cache.clear()
 
-            for item in candidates:
+            work_queue = [("ocr", item) for item in ocr_candidates] + [("doc", item) for item in doc_candidates]
+            for kind, item in work_queue:
                 if self._stop_worker_event.is_set():
                     break
                 while self._user_active_event.is_set():
@@ -1595,11 +1679,14 @@ class WhatsAppBot:
 
                 msg_id = item["id"]
                 file_path = item.get("local_path") or ""
-                mimetype = item.get("media_mimetype") or "image/jpeg"
-                self._maybe_index_local_ocr(msg_id, file_path, mimetype, path_cache=path_cache)
+                if kind == "ocr":
+                    mimetype = item.get("media_mimetype") or "image/jpeg"
+                    self._maybe_index_local_ocr(msg_id, file_path, mimetype, path_cache=path_cache)
+                else:
+                    self._maybe_index_local_doc(msg_id, file_path, path_cache=path_cache)
 
-                # Yield CPU slightly between local OCR calls
-                if self._stop_worker_event.wait(0.25):
+                # Yield CPU slightly between local indexing calls
+                if self._stop_worker_event.wait(0.2):
                     break
 
     def stop(self) -> None:
@@ -1608,8 +1695,8 @@ class WhatsAppBot:
         self._stop_worker_event.set()
         if self._media_storage_thread and self._media_storage_thread.is_alive():
             self._media_storage_thread.join(timeout=2.0)
-        if self._local_ocr_thread and self._local_ocr_thread.is_alive():
-            self._local_ocr_thread.join(timeout=2.0)
+        if self._local_index_thread and self._local_index_thread.is_alive():
+            self._local_index_thread.join(timeout=2.0)
         try:
             self._media_executor.shutdown(wait=False)
         except Exception:
@@ -1650,8 +1737,8 @@ class WhatsAppBot:
         # Launch media storage pre-download worker (Zero Gemini API Cost - keeps media accessible after 30 days)
         self._start_media_storage_worker()
 
-        # Launch zero-API Local CPU OCR backfill worker (if ENABLE_LOCAL_OCR=true & tesseract installed)
-        self._start_local_ocr_worker()
+        # Launch zero-API Local Background Index worker (doc text extraction + optional image CPU OCR)
+        self._start_local_index_worker()
 
         logger.info("Starting WhatsApp client connection...")
         self.client.connect()
@@ -1667,8 +1754,8 @@ class WhatsAppBot:
                 pass
         if self._media_storage_thread and self._media_storage_thread.is_alive():
             self._media_storage_thread.join(timeout=2.0)
-        if self._local_ocr_thread and self._local_ocr_thread.is_alive():
-            self._local_ocr_thread.join(timeout=2.0)
+        if self._local_index_thread and self._local_index_thread.is_alive():
+            self._local_index_thread.join(timeout=2.0)
 
         # 1. Server-side logout via neonize
         try:

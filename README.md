@@ -203,7 +203,9 @@ MEDIA_STORAGE_INCLUDE_STATUSES=true
 MEDIA_STORAGE_DELAY_SECONDS=1.5
 STATUS_MEDIA_RETENTION_DAYS=0
 
-# [OPTIONAL] Local CPU Background OCR (0 Gemini API calls; requires: sudo apt install -y tesseract-ocr)
+# [OPTIONAL] Local Background Indexing (0 Gemini API calls)
+ENABLE_LOCAL_DOC_INDEX=true
+# Image CPU OCR requires: sudo apt install -y tesseract-ocr
 ENABLE_LOCAL_OCR=false
 ```
 

@@ -900,6 +900,47 @@ def _extract_zip_contents(path: Path, max_chars: int = 18000) -> str:
         return f"Failed to inspect ZIP archive: {e}"
 
 
+PLAIN_TEXT_DOC_EXTS: frozenset[str] = frozenset({
+    ".txt", ".log", ".md", ".markdown", ".csv", ".tsv", ".json", ".xml", ".yaml", ".yml",
+    ".html", ".htm", ".tex", ".ini", ".cfg", ".conf", ".env", ".sql", ".py", ".js", ".jsx",
+    ".ts", ".tsx", ".css", ".scss", ".c", ".cpp", ".h", ".hpp", ".java", ".kt", ".cs",
+    ".php", ".rb", ".go", ".rs", ".swift", ".sh", ".bash", ".bat", ".ps1", ".cmd", ".epub",
+})
+
+LOCAL_DOC_INDEXABLE_EXTS: frozenset[str] = PLAIN_TEXT_DOC_EXTS | frozenset({
+    ".pdf", ".xlsx", ".xlsm", ".xltx", ".xls",
+    ".docx", ".doc", ".pptx", ".ppt",
+    ".odt", ".ods", ".odp", ".rtf",
+    ".ipynb", ".vcf", ".ics", ".zip",
+})
+
+_NON_CONTENT_DOC_PREFIXES = (
+    "Failed to ",
+    "File '",
+    "Document '",
+    "The PDF appears to be empty",
+    "The Excel spreadsheet contains no readable",
+    "The Word document appears to be empty",
+    "The PowerPoint presentation contains no text",
+    "The Jupyter Notebook contains no",
+    "OpenDocument file appears empty",
+)
+
+
+def is_meaningful_extracted_doc_text(text: str, min_len: int = 20) -> bool:
+    """Return True if extract_document_text output contains real searchable text rather than errors or binary junk."""
+    if not text:
+        return False
+    stripped = text.strip()
+    if len(stripped) < min_len:
+        return False
+    if stripped.startswith(_NON_CONTENT_DOC_PREFIXES):
+        return False
+    if stripped.count("\ufffd") >= max(5, len(stripped) // 10):
+        return False
+    return True
+
+
 def extract_document_text(file_path: str, max_chars: int = 18000) -> str:
     """Extract readable structured text from any day-to-day WhatsApp file:
     PDFs, Excel spreadsheets, Word docs, PowerPoint presentations, Jupyter notebooks,
@@ -967,12 +1008,7 @@ def extract_document_text(file_path: str, max_chars: int = 18000) -> str:
         return _extract_zip_contents(path, max_chars=max_chars)
 
     # 11. Plain Text, Notes, Logs, Markdown, Configs, E-books & Source Code
-    elif suffix in [
-        ".txt", ".log", ".md", ".markdown", ".csv", ".tsv", ".json", ".xml", ".yaml", ".yml",
-        ".html", ".htm", ".tex", ".ini", ".cfg", ".conf", ".env", ".sql", ".py", ".js", ".jsx",
-        ".ts", ".tsx", ".css", ".scss", ".c", ".cpp", ".h", ".hpp", ".java", ".kt", ".cs",
-        ".php", ".rb", ".go", ".rs", ".swift", ".sh", ".bash", ".bat", ".ps1", ".cmd", ".epub"
-    ]:
+    elif suffix in PLAIN_TEXT_DOC_EXTS:
         return _read_plain_text(path, max_chars=max_chars)
 
     # 12. Fallback: try reading as plain text with multi-encoding detection before giving up
