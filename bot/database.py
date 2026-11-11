@@ -121,6 +121,12 @@ class DatabaseManager:
                 ("media_hash", "TEXT"),
                 ("local_ocr_done", "INTEGER DEFAULT 0"),
                 ("local_doc_done", "INTEGER DEFAULT 0"),
+                ("is_deleted", "INTEGER DEFAULT 0"),
+                ("deleted_at", "INTEGER DEFAULT 0"),
+                ("deleted_by", "TEXT DEFAULT ''"),
+                ("is_edited", "INTEGER DEFAULT 0"),
+                ("edited_at", "INTEGER DEFAULT 0"),
+                ("original_text", "TEXT DEFAULT ''"),
             ]:
                 if col_name not in existing_cols:
                     conn.execute(f"ALTER TABLE messages ADD COLUMN {col_name} {col_type};")
@@ -134,6 +140,8 @@ class DatabaseManager:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_media_hash ON messages(media_hash);")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_local_ocr ON messages(local_ocr_done);")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_local_doc ON messages(local_doc_done);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_is_deleted ON messages(is_deleted);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_is_edited ON messages(is_edited);")
 
             # 3. Full-Text Search Virtual Table (FTS5)
             conn.execute(
@@ -187,6 +195,24 @@ class DatabaseManager:
                 );
                 """
             )
+
+            # 6. Deleted & Edited Message Revisions Audit Table ("Anti-Delete Vault")
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS message_revisions (
+                    revision_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    msg_id TEXT NOT NULL,
+                    chat_jid TEXT,
+                    event_type TEXT NOT NULL,
+                    actor TEXT,
+                    previous_text TEXT,
+                    new_text TEXT,
+                    event_ts INTEGER NOT NULL
+                );
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_revisions_msg_id ON message_revisions(msg_id);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_revisions_event_ts ON message_revisions(event_ts DESC);")
 
             conn.commit()
             logger.info("Database initialized successfully at %s", self.db_path)
@@ -642,7 +668,14 @@ class DatabaseManager:
         ON CONFLICT(id) DO UPDATE SET
             chat_name = COALESCE(excluded.chat_name, messages.chat_name),
             sender_name = COALESCE(excluded.sender_name, messages.sender_name),
-            text = CASE WHEN excluded.text != '' THEN excluded.text ELSE messages.text END,
+            text = CASE
+                WHEN COALESCE(messages.is_deleted, 0) = 0
+                 AND COALESCE(messages.is_edited, 0) = 0
+                 AND COALESCE(messages.text, '') = ''
+                 AND excluded.text != ''
+                THEN excluded.text
+                ELSE messages.text
+            END,
             media_type = CASE WHEN excluded.media_type != 'text' THEN excluded.media_type ELSE messages.media_type END,
             media_filename = CASE WHEN excluded.media_filename != '' THEN excluded.media_filename ELSE messages.media_filename END,
             media_mimetype = CASE WHEN excluded.media_mimetype != '' THEN excluded.media_mimetype ELSE messages.media_mimetype END,
@@ -687,7 +720,14 @@ class DatabaseManager:
         ON CONFLICT(id) DO UPDATE SET
             chat_name = COALESCE(excluded.chat_name, messages.chat_name),
             sender_name = COALESCE(excluded.sender_name, messages.sender_name),
-            text = CASE WHEN excluded.text != '' THEN excluded.text ELSE messages.text END,
+            text = CASE
+                WHEN COALESCE(messages.is_deleted, 0) = 0
+                 AND COALESCE(messages.is_edited, 0) = 0
+                 AND COALESCE(messages.text, '') = ''
+                 AND excluded.text != ''
+                THEN excluded.text
+                ELSE messages.text
+            END,
             media_type = CASE WHEN excluded.media_type != 'text' THEN excluded.media_type ELSE messages.media_type END,
             media_filename = CASE WHEN excluded.media_filename != '' THEN excluded.media_filename ELSE messages.media_filename END,
             media_mimetype = CASE WHEN excluded.media_mimetype != '' THEN excluded.media_mimetype ELSE messages.media_mimetype END,
@@ -863,6 +903,282 @@ class DatabaseManager:
             min_len=20,
             max_chars=6000,
         )
+
+    @staticmethod
+    def _normalize_event_ts(event_ts: int | None) -> int:
+        ts = int(event_ts or 0)
+        if ts > 10_000_000_000:
+            ts //= 1000
+        return ts if ts > 0 else int(time.time())
+
+    def mark_message_deleted(
+        self,
+        target_msg_id: str,
+        deleted_by: str = "",
+        deleted_ts: int | None = None,
+        chat_jid: str = "",
+    ) -> dict[str, Any] | None:
+        """Preserve original content and media on Delete-for-Everyone while tagging the message as deleted."""
+        if not target_msg_id:
+            return None
+        ts = self._normalize_event_ts(deleted_ts)
+        with self._get_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT id, chat_jid, chat_name, sender_jid, sender_name, text, original_text,
+                       media_type, media_filename, local_path, is_deleted, deleted_at, deleted_by
+                FROM messages WHERE id = ?
+                """,
+                (target_msg_id,),
+            ).fetchone()
+
+            if not row:
+                conn.execute(
+                    """
+                    INSERT INTO message_revisions (msg_id, chat_jid, event_type, actor, previous_text, new_text, event_ts)
+                    VALUES (?, ?, 'deleted', ?, '', '', ?)
+                    """,
+                    (target_msg_id, chat_jid, deleted_by or "Sender", ts),
+                )
+                conn.commit()
+                return None
+
+            actor_label = (deleted_by or row["sender_name"] or row["sender_jid"] or "Sender").strip()
+            if row["is_deleted"]:
+                return {
+                    "id": row["id"],
+                    "chat": row["chat_name"] or row["chat_jid"],
+                    "sender": row["sender_name"] or row["sender_jid"],
+                    "original_text": row["original_text"] or row["text"] or "",
+                    "media_type": row["media_type"] or "text",
+                    "media_filename": row["media_filename"] or "",
+                    "local_path": row["local_path"] or "",
+                    "deleted_by": row["deleted_by"] or actor_label,
+                    "deleted_at": _format_timestamp(row["deleted_at"] or ts),
+                    "already_recorded": True,
+                }
+
+            current_text = row["text"] or ""
+            preserved_original = row["original_text"] or current_text
+            marker = f"[Deleted for everyone by {actor_label} at {_format_timestamp(ts)}]"
+            if "[Deleted for everyone" not in current_text:
+                updated_text = f"{current_text}\n{marker}" if current_text else marker
+            else:
+                updated_text = current_text
+
+            conn.execute(
+                """
+                UPDATE messages
+                SET is_deleted = 1,
+                    deleted_at = ?,
+                    deleted_by = ?,
+                    original_text = ?,
+                    text = ?
+                WHERE id = ?
+                """,
+                (ts, actor_label, preserved_original, updated_text, target_msg_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO message_revisions (msg_id, chat_jid, event_type, actor, previous_text, new_text, event_ts)
+                VALUES (?, ?, 'deleted', ?, ?, '', ?)
+                """,
+                (target_msg_id, row["chat_jid"], actor_label, current_text, ts),
+            )
+            conn.commit()
+            return {
+                "id": row["id"],
+                "chat": row["chat_name"] or row["chat_jid"],
+                "sender": row["sender_name"] or row["sender_jid"],
+                "original_text": preserved_original,
+                "media_type": row["media_type"] or "text",
+                "media_filename": row["media_filename"] or "",
+                "local_path": row["local_path"] or "",
+                "deleted_by": actor_label,
+                "deleted_at": _format_timestamp(ts),
+                "already_recorded": False,
+            }
+
+    @staticmethod
+    def _strip_vault_markers(text: str) -> str:
+        cleaned = re.sub(r"\n?\[Edited at [^\]]*\]", "", text or "")
+        cleaned = re.sub(r"\n?\[Deleted for everyone[^\]]*\]", "", cleaned)
+        return cleaned.strip()
+
+    def record_message_edit(
+        self,
+        target_msg_id: str,
+        new_text: str,
+        edited_by: str = "",
+        edited_ts: int | None = None,
+        chat_jid: str = "",
+    ) -> dict[str, Any] | None:
+        """Preserve original pre-edit wording and append revision audit metadata when a message is edited."""
+        if not target_msg_id:
+            return None
+        ts = self._normalize_event_ts(edited_ts)
+        clean_new = (new_text or "").strip()
+
+        with self._get_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT id, chat_jid, chat_name, sender_jid, sender_name, text, original_text, is_deleted
+                FROM messages WHERE id = ?
+                """,
+                (target_msg_id,),
+            ).fetchone()
+
+            if not row:
+                conn.execute(
+                    """
+                    INSERT INTO message_revisions (msg_id, chat_jid, event_type, actor, previous_text, new_text, event_ts)
+                    VALUES (?, ?, 'edited', ?, '', ?, ?)
+                    """,
+                    (target_msg_id, chat_jid, edited_by or "Sender", clean_new, ts),
+                )
+                conn.commit()
+                return None
+
+            actor_label = (edited_by or row["sender_name"] or row["sender_jid"] or "Sender").strip()
+            current_text = row["text"] or ""
+            prev_base = self._strip_vault_markers(current_text)
+            prev_clean_body = re.sub(r"\n?\[(?:OCR|Local Text|Doc Text):.*", "", prev_base, flags=re.DOTALL).strip()
+            first_orig = row["original_text"] or prev_clean_body
+            if not clean_new:
+                clean_new = prev_clean_body
+
+            # Preserve any existing Deleted or local OCR/Doc markers appended after the message body
+            preserved_tags = []
+            del_match = re.search(r"(\[Deleted for everyone[^\]]*\])", current_text)
+            if del_match:
+                preserved_tags.append(del_match.group(1))
+            local_match = re.search(r"(\[(?:OCR|Local Text|Doc Text):.*)", current_text, flags=re.DOTALL)
+            if local_match:
+                preserved_tags.append(local_match.group(1).strip())
+
+            orig_inline = first_orig[:500].replace("\n", " ").replace("[", "(").replace("]", ")")
+            edit_marker = f'[Edited at {_format_timestamp(ts)} | Original: "{orig_inline}"]'
+            parts = [clean_new, edit_marker, *preserved_tags]
+            updated_text = "\n".join(p for p in parts if p)
+
+            conn.execute(
+                """
+                UPDATE messages
+                SET is_edited = 1,
+                    edited_at = ?,
+                    original_text = ?,
+                    text = ?
+                WHERE id = ?
+                """,
+                (ts, first_orig, updated_text, target_msg_id),
+            )
+            conn.execute(
+                """
+                INSERT INTO message_revisions (msg_id, chat_jid, event_type, actor, previous_text, new_text, event_ts)
+                VALUES (?, ?, 'edited', ?, ?, ?, ?)
+                """,
+                (target_msg_id, row["chat_jid"], actor_label, prev_clean_body, clean_new, ts),
+            )
+            conn.commit()
+            return {
+                "id": row["id"],
+                "chat": row["chat_name"] or row["chat_jid"],
+                "sender": row["sender_name"] or row["sender_jid"],
+                "original_text": first_orig,
+                "previous_text": prev_clean_body,
+                "new_text": clean_new,
+                "edited_at": _format_timestamp(ts),
+            }
+
+    def find_deleted_or_edited_messages(
+        self,
+        mode: str = "all",
+        chat_name_or_jid: str = "",
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        """Retrieve deleted and/or edited messages preserved by the Anti-Delete & Edit Vault."""
+        norm_mode = (mode or "all").strip().lower()
+        if norm_mode == "deleted":
+            conditions = ["m.is_deleted = 1"]
+        elif norm_mode == "edited":
+            conditions = ["m.is_edited = 1"]
+        else:
+            conditions = ["(m.is_deleted = 1 OR m.is_edited = 1)"]
+
+        params: list[Any] = []
+        if chat_name_or_jid and chat_name_or_jid.strip():
+            target = chat_name_or_jid.strip()
+            target_jid = self.resolve_chat_jid(target)
+            like_q = f"%{target.lower()}%"
+            if target_jid:
+                conditions.append(
+                    "(m.chat_jid = ? OR m.sender_jid = ? OR LOWER(m.chat_name) LIKE ? OR LOWER(m.sender_name) LIKE ?)"
+                )
+                params.extend([target_jid, target_jid, like_q, like_q])
+            else:
+                conditions.append("(LOWER(m.chat_name) LIKE ? OR LOWER(m.sender_name) LIKE ?)")
+                params.extend([like_q, like_q])
+
+        where_sql = " AND ".join(conditions)
+        sql = f"""
+        SELECT m.id, m.chat_jid, m.chat_name, m.sender_jid, m.sender_name, m.is_from_me,
+               m.text, m.original_text, m.timestamp, m.media_type, m.media_filename, m.local_path,
+               m.is_deleted, m.deleted_at, m.deleted_by, m.is_edited, m.edited_at
+        FROM messages m
+        WHERE {where_sql}
+        ORDER BY MAX(COALESCE(m.deleted_at, 0), COALESCE(m.edited_at, 0), COALESCE(m.timestamp, 0)) DESC
+        LIMIT ?
+        """
+        params.append(limit)
+
+        with self._get_connection() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+            msg_ids = [r["id"] for r in rows]
+            revisions_by_msg: dict[str, list[dict[str, Any]]] = {}
+            if msg_ids:
+                placeholders = ",".join("?" for _ in msg_ids)
+                rev_rows = conn.execute(
+                    f"""
+                    SELECT msg_id, event_type, actor, previous_text, new_text, event_ts
+                    FROM message_revisions
+                    WHERE msg_id IN ({placeholders})
+                    ORDER BY event_ts ASC, revision_id ASC
+                    """,
+                    tuple(msg_ids),
+                ).fetchall()
+                for rv in rev_rows:
+                    revisions_by_msg.setdefault(rv["msg_id"], []).append({
+                        "event": rv["event_type"],
+                        "actor": rv["actor"],
+                        "previous_text": rv["previous_text"] or "",
+                        "new_text": rv["new_text"] or "",
+                        "timestamp": _format_timestamp(rv["event_ts"]),
+                    })
+
+            results = []
+            for r in rows:
+                sender = "You" if r["is_from_me"] else (r["sender_name"] or r["sender_jid"])
+                current_body = self._strip_vault_markers(r["text"] or "")
+                has_local_media = bool(r["local_path"] and not str(r["local_path"]).startswith("["))
+                results.append({
+                    "id": r["id"],
+                    "chat": r["chat_name"] or r["chat_jid"],
+                    "chat_jid": r["chat_jid"],
+                    "sender": sender,
+                    "sent_at": _format_timestamp(r["timestamp"]),
+                    "is_deleted": bool(r["is_deleted"]),
+                    "deleted_at": _format_timestamp(r["deleted_at"]) if r["deleted_at"] else "",
+                    "deleted_by": r["deleted_by"] or "",
+                    "is_edited": bool(r["is_edited"]),
+                    "edited_at": _format_timestamp(r["edited_at"]) if r["edited_at"] else "",
+                    "original_text": r["original_text"] or "",
+                    "current_text": current_body,
+                    "media_type": r["media_type"] or "text",
+                    "media_filename": r["media_filename"] or "",
+                    "media_saved_on_disk": has_local_media,
+                    "revisions": revisions_by_msg.get(r["id"], []),
+                })
+            return results
 
     def prune_redundant_raw_messages(self, vacuum: bool = False) -> dict[str, Any]:
         """Clear redundant protobuf BLOBs on non-attachments and already-processed media rows."""
@@ -1561,18 +1877,24 @@ class DatabaseManager:
 
             total_local_ocr = 0
             total_local_docs = 0
+            total_deleted = 0
+            total_edited = 0
             try:
                 counts_row = cursor.execute(
                     """
                     SELECT
                         COALESCE(SUM(CASE WHEN local_ocr_done = 1 THEN 1 ELSE 0 END), 0),
-                        COALESCE(SUM(CASE WHEN local_doc_done = 1 THEN 1 ELSE 0 END), 0)
+                        COALESCE(SUM(CASE WHEN local_doc_done = 1 THEN 1 ELSE 0 END), 0),
+                        COALESCE(SUM(CASE WHEN is_deleted = 1 THEN 1 ELSE 0 END), 0),
+                        COALESCE(SUM(CASE WHEN is_edited = 1 THEN 1 ELSE 0 END), 0)
                     FROM messages
                     """
                 ).fetchone()
                 if counts_row:
                     total_local_ocr = counts_row[0] or 0
                     total_local_docs = counts_row[1] or 0
+                    total_deleted = counts_row[2] or 0
+                    total_edited = counts_row[3] or 0
             except Exception:
                 pass
 
@@ -1590,6 +1912,8 @@ class DatabaseManager:
                 "total_ocr_cached": total_ocr,
                 "total_local_ocr": total_local_ocr,
                 "total_local_docs": total_local_docs,
+                "total_deleted": total_deleted,
+                "total_edited": total_edited,
                 "total_stored_media": total_stored_media,
                 "dedup_saved_files": dedup_saved_files,
                 "raw_blob_mb": raw_blob_mb,

@@ -24,6 +24,7 @@ from .utils import (
     LOCAL_DOC_INDEXABLE_EXTS,
     MessageDeduplicator,
     RichMessageInfo,
+    extract_protocol_action,
     extract_rich_message_info,
     extract_document_text,
     format_for_whatsapp,
@@ -184,6 +185,7 @@ class WhatsAppBot:
                 # Sync messages with live counter in batches of 500
                 start_time = time.time()
                 pending_messages = []
+                pending_protocol_actions: list[tuple[dict[str, Any], bool, str, int, str]] = []
                 processed_count = 0
                 total_synced_msgs = 0
                 for conv in data.conversations:
@@ -232,8 +234,16 @@ class WhatsAppBot:
                             if not chat_name:
                                 chat_name = sender_name or (chat_jid.split("@")[0] if "@s.whatsapp.net" in chat_jid else "")
 
-                        rich_info = extract_rich_message_info(wmsg.message)
                         timestamp = normalize_timestamp(wmsg.messageTimestamp)
+                        proto_action = extract_protocol_action(wmsg.message)
+                        if proto_action:
+                            if proto_action["action"] != "system":
+                                pending_protocol_actions.append(
+                                    (proto_action, is_from_me, sender_name, timestamp, chat_jid)
+                                )
+                            continue
+
+                        rich_info = extract_rich_message_info(wmsg.message)
                         # Only persist raw_message BLOBs for downloadable media (avoids DB bloat on text messages)
                         raw_bytes = (
                             wmsg.message.SerializeToString()
@@ -268,6 +278,11 @@ class WhatsAppBot:
                             self.db.insert_messages_batch(pending_messages)
                             total_synced_msgs += len(pending_messages)
                             pending_messages.clear()
+                            for act, act_me, act_sender, act_ts, act_chat in pending_protocol_actions:
+                                self._apply_protocol_action(
+                                    act, act_me, act_sender, act_ts, chat_jid=act_chat, allow_notify=False
+                                )
+                            pending_protocol_actions.clear()
 
                             elapsed = time.time() - start_time
                             rate = processed_count / elapsed if elapsed > 0 else 0
@@ -282,6 +297,11 @@ class WhatsAppBot:
                     self.db.insert_messages_batch(pending_messages)
                     total_synced_msgs += len(pending_messages)
                     pending_messages.clear()
+                for act, act_me, act_sender, act_ts, act_chat in pending_protocol_actions:
+                    self._apply_protocol_action(
+                        act, act_me, act_sender, act_ts, chat_jid=act_chat, allow_notify=False
+                    )
+                pending_protocol_actions.clear()
 
                 total_elapsed = time.time() - start_time
                 total_rate = total_synced_msgs / total_elapsed if total_elapsed > 0 else 0
@@ -320,17 +340,6 @@ class WhatsAppBot:
                 msg_id = info.ID
                 timestamp = normalize_timestamp(info.Timestamp)
 
-                rich_info = extract_rich_message_info(message.Message)
-                text = rich_info.text.strip()
-                raw_bytes = (
-                    message.Message.SerializeToString()
-                    if (
-                        rich_info.media_type in DOWNLOADABLE_MEDIA_TYPES
-                        and hasattr(message.Message, "SerializeToString")
-                    )
-                    else None
-                )
-
                 # Store contact info
                 if push_name:
                     self.db.upsert_contact(jid=sender_jid, push_name=push_name, is_group=is_group)
@@ -342,6 +351,31 @@ class WhatsAppBot:
                         sender_display_name = c_info.get("name") or c_info.get("push_name") or c_info.get("phone_number") or ""
                 if not sender_display_name:
                     sender_display_name = sender_jid.split("@")[0] if ("@" in sender_jid and not is_group) else ("You" if is_from_me else "Participant")
+
+                # Intercept Delete-for-Everyone revokes, edits, and system protocol frames before normal indexing
+                proto_action = extract_protocol_action(message.Message)
+                if proto_action:
+                    self._apply_protocol_action(
+                        proto_action,
+                        is_from_me=is_from_me,
+                        actor_name=sender_display_name,
+                        fallback_ts=timestamp,
+                        chat_jid=chat_jid,
+                        client=client,
+                        allow_notify=True,
+                    )
+                    return
+
+                rich_info = extract_rich_message_info(message.Message)
+                text = rich_info.text.strip()
+                raw_bytes = (
+                    message.Message.SerializeToString()
+                    if (
+                        rich_info.media_type in DOWNLOADABLE_MEDIA_TYPES
+                        and hasattr(message.Message, "SerializeToString")
+                    )
+                    else None
+                )
 
                 # Resolve chat display name for 1-on-1 DMs with unsaved contacts
                 chat_display_name = None
@@ -446,6 +480,86 @@ class WhatsAppBot:
                 logger.info("Sent direct message to self-chat.")
             except Exception as e2:
                 logger.exception("Failed to send response to self-chat: %s", e2)
+
+    def _apply_protocol_action(
+        self,
+        proto_action: dict[str, Any],
+        is_from_me: bool,
+        actor_name: str,
+        fallback_ts: int,
+        chat_jid: str = "",
+        client: NewClient | None = None,
+        allow_notify: bool = False,
+    ) -> None:
+        """Apply REVOKE (Delete-for-Everyone) or MESSAGE_EDIT events to the Anti-Delete & Edit Vault."""
+        action = proto_action.get("action")
+        if action == "system":
+            return
+
+        target_id = proto_action.get("target_msg_id") or ""
+        if not target_id:
+            return
+        event_ts = normalize_timestamp(proto_action.get("timestamp_ms") or fallback_ts)
+
+        if action == "revoke":
+            preserved = self.db.mark_message_deleted(
+                target_id,
+                deleted_by=actor_name,
+                deleted_ts=event_ts,
+                chat_jid=chat_jid or proto_action.get("remote_jid", ""),
+            )
+            if preserved and not preserved.get("already_recorded"):
+                logger.info(
+                    "Anti-Delete Vault: preserved deleted %s message %s in '%s' (by %s).",
+                    preserved.get("media_type", "text"),
+                    target_id,
+                    preserved.get("chat", chat_jid),
+                    preserved.get("deleted_by", actor_name),
+                )
+                target_self = self.last_self_chat_jid or self.my_jid
+                if (
+                    allow_notify
+                    and Config.ANTI_DELETE_NOTIFY
+                    and not is_from_me
+                    and chat_jid != "status@broadcast"
+                    and target_self
+                    and client
+                ):
+                    orig = (preserved.get("original_text") or "").strip()
+                    orig_preview = (orig[:300] + "...") if len(orig) > 300 else (orig or "[No text content]")
+                    media_note = ""
+                    if preserved.get("local_path") and not str(preserved["local_path"]).startswith("["):
+                        fname = preserved.get("media_filename") or preserved.get("media_type") or "media"
+                        media_note = f"\n• *Media Saved 💾:* `{fname}`"
+                    alert = (
+                        "🛡️ *Deleted Message Preserved*\n\n"
+                        f"• *Chat:* {preserved.get('chat')}\n"
+                        f"• *Sender:* {preserved.get('sender')}\n"
+                        f"• *Deleted At:* {preserved.get('deleted_at')}\n"
+                        f"• *Original Content:* {orig_preview}{media_note}"
+                    )
+                    try:
+                        resp = client.send_message(target_self, alert)
+                        if resp and hasattr(resp, "ID"):
+                            self.dedup.add(resp.ID)
+                    except Exception as notify_err:
+                        logger.debug("Failed to send anti-delete alert: %s", notify_err)
+
+        elif action == "edit":
+            new_text = proto_action.get("new_text", "")
+            edit_res = self.db.record_message_edit(
+                target_id,
+                new_text=new_text,
+                edited_by=actor_name,
+                edited_ts=event_ts,
+                chat_jid=chat_jid or proto_action.get("remote_jid", ""),
+            )
+            if edit_res:
+                logger.info(
+                    "Anti-Edit Vault: preserved original wording for edited message %s in '%s'.",
+                    target_id,
+                    edit_res.get("chat", chat_jid),
+                )
 
     def _build_quoted_context(self, rich_info: RichMessageInfo) -> str:
         """Resolve full context for a WhatsApp swipe-reply / quoted message."""
@@ -580,12 +694,62 @@ class WhatsAppBot:
                 f"• `{self.prefix} <question>` — Search chats, inspect photos/PDFs/spreadsheets, summarize messages, or ask follow-ups\n"
                 "• `!get <file or topic>` — Download & send a document directly here _(aliases: `!send`, `!fetch`, `!doc`, `!file`, `!download`)_\n"
                 "• *Swipe-Reply Support* — Swipe/reply to any photo, PDF, document, or message with `!ask` or `!get` to act directly on it\n"
+                "• `!deleted [name]` / `!edits [name]` — View deleted-for-everyone & edited messages saved by Anti-Delete Vault _(alias: `!vault`)_\n"
                 "• `!clear` — Reset conversation memory to start a fresh topic _(aliases: `!new`, `!forget`)_\n"
-                "• `!status` — View indexed messages, stored 30-day-safe media, OCR cache & model info\n"
+                "• `!status` — View indexed messages, stored 30-day-safe media, OCR/Doc index, Vault & model info\n"
                 "• `!help` — Show this command guide\n"
                 "• `!unlink` — Disconnect WhatsApp session _(add `delete-data` to wipe local DB)_"
             )
             self._send_self_chat_reply(client, chat_jid, message, help_text)
+            return
+
+        # Check for !deleted / !edits / !vault Anti-Delete Vault commands
+        vault_triggers = [("!deleted", "deleted"), ("!edits", "edited"), ("!vault", "all")]
+        matched_vault = next(
+            ((trig, mode) for trig, mode in vault_triggers if self._matches_command_trigger(text_lower, trig)),
+            None,
+        )
+        if matched_vault:
+            if self.dedup.contains(msg_id):
+                return
+            self.dedup.add(msg_id)
+            trig, mode = matched_vault
+            filter_query = text[len(trig):].strip()
+            items = self.db.find_deleted_or_edited_messages(
+                mode=mode, chat_name_or_jid=filter_query, limit=15
+            )
+            if not items:
+                scope_note = f" matching _{filter_query}_" if filter_query else ""
+                reply = (
+                    f"🛡️ *Anti-Delete & Edit Vault*\n\n"
+                    f"No {mode if mode != 'all' else 'deleted or edited'} messages recorded yet{scope_note}.\n"
+                    "_Real-time Delete-for-Everyone and message edits are automatically archived here going forward._"
+                )
+            else:
+                lines = [f"🛡️ *Anti-Delete & Edit Vault* ({len(items)} recent)"]
+                if filter_query:
+                    lines[0] += f" — Filter: _{filter_query}_"
+                lines.append("")
+                for idx, it in enumerate(items, 1):
+                    badge = "🗑️ Deleted" if it["is_deleted"] else "✏️ Edited"
+                    if it["is_deleted"] and it["is_edited"]:
+                        badge = "🗑️✏️ Edited & Deleted"
+                    when = it["deleted_at"] or it["edited_at"] or it["sent_at"]
+                    orig = (it["original_text"] or it["current_text"] or "[Empty]").replace("\n", " ")
+                    if len(orig) > 180:
+                        orig = orig[:180].rstrip() + "..."
+                    entry = f"{idx}. *{badge}* — *{it['sender']}* in _{it['chat']}_ ({when})\n   • *Original:* {orig}"
+                    if it["is_edited"] and it["current_text"] and it["current_text"] != it["original_text"]:
+                        curr = it["current_text"].replace("\n", " ")
+                        if len(curr) > 150:
+                            curr = curr[:150].rstrip() + "..."
+                        entry += f"\n   • *Latest:* {curr}"
+                    if it["media_saved_on_disk"]:
+                        mname = it["media_filename"] or it["media_type"]
+                        entry += f"\n   • *Media Preserved 💾:* `{mname}` (ID: `{it['id']}`)"
+                    lines.append(entry)
+                reply = "\n".join(lines)
+            self._send_self_chat_reply(client, chat_jid, message, reply)
             return
 
         # Check for account unlinking / logout commands in self-chat
@@ -663,6 +827,7 @@ class WhatsAppBot:
                 f"• *AI Vision & Voice OCR:* On-Demand ⚡ ({stats['total_ocr_cached']} cached)\n"
                 f"• *Local CPU OCR:* {local_ocr_state}\n"
                 f"• *Local Doc Index:* {local_doc_state}\n"
+                f"• *Anti-Delete Vault:* Active 🛡️ ({stats.get('total_deleted', 0)} deleted, {stats.get('total_edited', 0)} edited)\n"
                 f"• *Database Size:* {stats['db_size_mb']} MB\n"
                 f"• *Sync Status:* {sync_state}\n"
                 f"• *AI Model:* `{Config.GEMINI_MODEL}` ({key_count} API key{'s' if key_count != 1 else ''})\n\n"

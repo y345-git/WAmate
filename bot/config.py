@@ -61,6 +61,9 @@ class Config:
     ENABLE_LOCAL_OCR: bool = os.getenv("ENABLE_LOCAL_OCR", "false").lower() in ("true", "1", "yes")
     ENABLE_LOCAL_DOC_INDEX: bool = os.getenv("ENABLE_LOCAL_DOC_INDEX", "true").lower() in ("true", "1", "yes")
 
+    # Anti-Delete & Edit Vault (always preserves deleted/edited originals in SQLite; set true for live self-chat alerts)
+    ANTI_DELETE_NOTIFY: bool = os.getenv("ANTI_DELETE_NOTIFY", "false").lower() in ("true", "1", "yes")
+
     @staticmethod
     def get_tesseract_path() -> str | None:
         """Return path to the system tesseract binary if installed, else None."""

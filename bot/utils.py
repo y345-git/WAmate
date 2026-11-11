@@ -128,7 +128,7 @@ def parse_vcard(vcard_text: str) -> dict[str, str]:
 
 
 def unwrap_message(msg: Message) -> Message:
-    """Unwrap ephemeral, viewOnce, or template message containers."""
+    """Unwrap ephemeral, viewOnce, deviceSent, or document-caption message containers."""
     while True:
         if msg.ephemeralMessage.ListFields():
             msg = msg.ephemeralMessage.message
@@ -136,11 +136,84 @@ def unwrap_message(msg: Message) -> Message:
             msg = msg.viewOnceMessage.message
         elif msg.viewOnceMessageV2.ListFields():
             msg = msg.viewOnceMessageV2.message
+        elif hasattr(msg, "viewOnceMessageV2Extension") and msg.viewOnceMessageV2Extension.ListFields():
+            msg = msg.viewOnceMessageV2Extension.message
+        elif hasattr(msg, "deviceSentMessage") and msg.deviceSentMessage.ListFields():
+            msg = msg.deviceSentMessage.message
         elif msg.documentWithCaptionMessage.ListFields():
             msg = msg.documentWithCaptionMessage.message
         else:
             break
     return msg
+
+
+def extract_protocol_action(raw_msg: Message) -> dict[str, Any] | None:
+    """Detect WhatsApp protocol control messages (Delete-for-Everyone revokes, edits, system events).
+
+    Returns a dict describing the action or None if this is a normal user message.
+    """
+    current = raw_msg
+    for _ in range(8):
+        if current.protocolMessage.ListFields():
+            break
+        if current.ephemeralMessage.ListFields():
+            current = current.ephemeralMessage.message
+        elif hasattr(current, "editedMessage") and current.editedMessage.ListFields():
+            current = current.editedMessage.message
+        elif hasattr(current, "deviceSentMessage") and current.deviceSentMessage.ListFields():
+            current = current.deviceSentMessage.message
+        elif current.viewOnceMessage.ListFields():
+            current = current.viewOnceMessage.message
+        elif current.viewOnceMessageV2.ListFields():
+            current = current.viewOnceMessageV2.message
+        elif hasattr(current, "viewOnceMessageV2Extension") and current.viewOnceMessageV2Extension.ListFields():
+            current = current.viewOnceMessageV2Extension.message
+        else:
+            break
+
+    if not current.protocolMessage.ListFields():
+        return None
+
+    proto = current.protocolMessage
+    has_type = hasattr(proto, "HasField") and proto.HasField("type")
+    ptype = int(proto.type) if has_type else -1
+    has_key = hasattr(proto, "HasField") and proto.HasField("key")
+    target_id = (proto.key.ID or "").strip() if (has_key or proto.key.ID) else ""
+    remote_jid = (proto.key.remoteJID or "").strip() if (has_key or proto.key.remoteJID) else ""
+    ts_ms = int(getattr(proto, "timestampMS", 0) or 0)
+
+    # 0 = ProtocolMessage.Type.REVOKE (Delete for Everyone)
+    if ptype == 0 and target_id:
+        return {
+            "action": "revoke",
+            "target_msg_id": target_id,
+            "remote_jid": remote_jid,
+            "timestamp_ms": ts_ms,
+        }
+
+    # 14 = ProtocolMessage.Type.MESSAGE_EDIT
+    if ptype == 14 and target_id:
+        edited_payload = proto.editedMessage if (hasattr(proto, "HasField") and proto.HasField("editedMessage")) else None
+        rich_info = extract_rich_message_info(edited_payload) if edited_payload is not None else RichMessageInfo()
+        return {
+            "action": "edit",
+            "target_msg_id": target_id,
+            "remote_jid": remote_jid,
+            "new_text": rich_info.text.strip(),
+            "rich_info": rich_info,
+            "timestamp_ms": ts_ms,
+        }
+
+    # Other pure protocol notifications (history sync notifications, ephemeral settings, key shares)
+    top_fields = {f.name for f, _ in current.ListFields()}
+    if top_fields.issubset({"protocolMessage", "messageContextInfo"}):
+        return {
+            "action": "system",
+            "target_msg_id": target_id,
+            "protocol_type": ptype,
+            "timestamp_ms": ts_ms,
+        }
+    return None
 
 
 def _find_context_info(msg: Message) -> Any:

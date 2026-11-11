@@ -53,6 +53,7 @@ Your primary purpose:
      - WAmate tracks phone numbers and WhatsApp profile push names for all 1-on-1 direct messages (DMs).
      - Search by phone number (or digits without spaces/country code) using `search_chat_history(contact_or_chat_name=phone_number)` or `search_messages_by_keyword(query=phone_number)`.
    - *Polls & Surveys*: Retrieve poll questions, available choices/options, and settings using `get_polls`.
+   - *Deleted & Edited Messages ("Anti-Delete Vault")*: When the user asks whether anyone deleted a message ('Delete for Everyone') or edited a message to change what they originally said, ALWAYS call `get_deleted_and_edited_messages`! If a deleted image or document was saved on disk (`media_saved_on_disk: true`), you can still inspect it with `inspect_and_ocr_image` or `read_and_ocr_document` using its `id` (`message_id`).
    - *Voice Notes & Audio Transcription*:
      - When the user asks what someone said in a voice note, audio message, or voice recording (or swipe-replies to one): CALL `transcribe_voice_note`!
      - `transcribe_voice_note` transcribes the spoken audio (handling English, Hindi, Hinglish, or regional languages cleanly) and caches the transcript permanently for instant future searches.
@@ -494,6 +495,21 @@ class GeminiAgent:
             """
             return self.db.get_recent_activity(hours=hours, limit=limit)
 
+        def get_deleted_and_edited_messages(
+            mode: str = "all", contact_or_chat: str = "", limit: int = 20
+        ) -> list[dict[str, Any]]:
+            """Retrieve preserved original text, media info, and edit history for messages that were deleted for everyone or edited.
+            Use this whenever the user asks about deleted messages, retracted photos/texts, or original versions of edited messages.
+
+            Args:
+                mode: Filter type — 'deleted', 'edited', or 'all' (default: 'all').
+                contact_or_chat: Optional contact name, sender, or group chat filter.
+                limit: Maximum number of records to return (default: 20).
+            """
+            return self.db.find_deleted_or_edited_messages(
+                mode=mode, chat_name_or_jid=contact_or_chat, limit=limit
+            )
+
         return [
             find_documents,
             send_document_to_chat,
@@ -504,6 +520,7 @@ class GeminiAgent:
             find_shared_contacts,
             get_polls,
             find_voice_notes_and_media,
+            get_deleted_and_edited_messages,
             search_chat_history,
             search_messages_by_keyword,
             find_contacts,

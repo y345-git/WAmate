@@ -50,6 +50,7 @@ WAmate: 📊 WAmate Second Brain Status
 * 💾 **30-Day Expiration Protection, SHA-256 Deduplication & Compact DB:** Automatically pre-downloads incoming photos, documents, voice notes, and status updates locally to disk with **zero Gemini API calls** and **SHA-256 content deduplication** (duplicate forwards point to one copy on disk). Non-media messages skip raw BLOB storage, and thread-local SQLite connection pooling keeps queries fast.
 * 🔑 **Automatic Multi-Key & Model Rotation (`GEMINI_API_KEYS`):** Configure multiple comma-separated Gemini API keys to automatically rotate past per-key `429` rate limits alongside candidate model fallbacks.
 * 👁️ **Multimodal AI Vision & On-Demand OCR:** Powered by Google Gemini to analyze scanned receipts, handwritten notes, whiteboards, bills, and visual items (clothing colors, objects, payment screenshots) on-demand whenever you ask, caching results permanently in SQLite for **0ms repeat queries with zero extra API calls**.
+* 🛡️ **Anti-Delete & Edit Vault:** Captures real-time Delete-for-Everyone (`REVOKE`) and message edit (`MESSAGE_EDIT`) events — preserving original wording, revision timelines, and any downloaded deleted media (`!deleted`, `!edits`, or `!ask`).
 * 🔗 **Link Preview & Web Metadata Search:** Automatically indexes webpage titles, descriptions, and metadata from shared URLs (GitHub repositories, YouTube videos, Amazon/e-commerce products, technical blogs, news articles), making shared links instantly searchable by topic or keyword.
 * 🆔 **Cryptographic WhatsApp LID Resolution:** Automatically cross-references WhatsApp's 15-digit privacy LIDs (`@lid`) against your phone address book, accurately identifying real contact names in group chats.
 * ⏳ **Real-Time Visual Feedback:** Reacts immediately with an hourglass **`⏳`** on your message bubble when a query begins, switching to a checkmark **`✅`** once completed.
@@ -70,6 +71,7 @@ All commands run directly in your WhatsApp **"Message yourself"** chat:
 | `!ask <question>` | Ask anything about your messages, chats, or media (supports follow-ups & swipe-replies) | `!ask what did Alex message me about the project deadline?` |
 | `!get <filename>` | Locate and deliver the real document file directly to you | `!get Q3 financial summary pdf` |
 | `!send <filename>` | Alternative trigger to fetch and deliver a file | `!send project roadmap 2026` |
+| `!deleted [name]` / `!edits [name]` | Browse deleted-for-everyone & edited messages saved by Anti-Delete Vault (`!vault`) | `!deleted Alex` |
 | `!clear` | Clear recent multi-turn conversation memory (`!new`, `!forget`) | `!clear` |
 | `!status` / `!stats` | View real-time database stats, message counts, and sync state | `!status` |
 | `!help` | Show all self-chat commands and shortcuts | `!help` |
@@ -207,6 +209,8 @@ STATUS_MEDIA_RETENTION_DAYS=0
 ENABLE_LOCAL_DOC_INDEX=true
 # Image CPU OCR requires: sudo apt install -y tesseract-ocr
 ENABLE_LOCAL_OCR=false
+# Optional live self-chat alert when someone deletes a message for everyone
+ANTI_DELETE_NOTIFY=false
 ```
 
 ---
