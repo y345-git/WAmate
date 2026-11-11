@@ -1,6 +1,10 @@
 import logging
+import threading
 import time
+from collections import deque
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 from google import genai
 from google.genai import types
 
@@ -27,11 +31,14 @@ Your primary purpose:
      - Always verify the actual `sender` and `chat` in the returned data. If a message in a group was sent by another member (e.g. Sarah), state clearly that Sarah sent it, NOT Alex.
    - *Documents & Scanned PDFs (OCR)*:
      - *Deliver the actual file*: When the user asks to send, get, receive, download, or deliver an actual document/file (e.g. 'Get me the invoices', 'get me the invoice PDFs', 'send me the tax invoice', 'send me the exam form pdf', 'get me the document'):
-       YOU MUST CALL `send_document_to_chat` IMMEDIATELY to deliver the file(s) directly to their chat!
+       YOU MUST CALL `send_document_to_chat` IMMEDIATELY to deliver the file(s) directly to their chat! If an exact `message_id` is provided in `[Quoted Message Context]`, pass `message_id=...` directly.
        NEVER just output a text list of filenames asking the user which one they want. Actively send the document file(s) using `send_document_to_chat`!
      - *Read / Analyze documents & files*: When the user asks what is inside any shared document, file, note, spreadsheet, code, or presentation:
-       Call `read_and_ocr_document`. It automatically reads, extracts, and analyzes content from all day-to-day WhatsApp file types: plain text (.txt, .log), Markdown (.md), Excel (.xlsx, .xls), CSV/TSV, Word (.docx, .doc, .rtf, .odt), PowerPoint (.pptx, .ppt, .odp), vCard contacts (.vcf), calendar events (.ics), Jupyter notebooks (.ipynb), ZIP archives (.zip), code files (.py, .js, .cpp, .java, etc.), and PDFs (including scanned PDFs with Gemini Vision OCR)!
+       Call `read_and_ocr_document` (passing `message_id=...` directly if provided in `[Quoted Message Context]`). It automatically reads, extracts, and analyzes content from all day-to-day WhatsApp file types: plain text (.txt, .log), Markdown (.md), Excel (.xlsx, .xls), CSV/TSV, Word (.docx, .doc, .rtf, .odt), PowerPoint (.pptx, .ppt, .odp), vCard contacts (.vcf), calendar events (.ics), Jupyter notebooks (.ipynb), ZIP archives (.zip), code files (.py, .js, .cpp, .java, etc.), and PDFs (including scanned PDFs with Gemini Vision OCR)!
      - *Search only*: Only use `find_documents` when the user explicitly asks to 'list', 'search', or 'check if I have' documents without asking to get or send them.
+   - *Quoted / Swipe-Reply Context & Multi-Turn Follow-Ups*:
+     - When `[Quoted Message Context]` is appended to the user's message, the user swipe-replied directly to that specific WhatsApp message or media item. Prioritize inspecting or delivering that exact `Message ID` or quoted content immediately before searching broadly!
+     - Use recent conversation history naturally for follow-up requests (e.g. 'send me the second one', 'what about GST on that?').
    - *Images, Photos, Screenshots & Visual Items (AI Vision OCR)*:
      - When the user asks about an image, photo, receipt, bill photo, payment transfer screenshot, clothes/item color, whiteboard, or visual object shared in chats:
        1. If searching for a specific payment, receipt, or topic (e.g. 'payment receipt sent to Alex', '500 dollar invoice transfer'):
@@ -74,11 +81,81 @@ Your primary purpose:
 class GeminiAgent:
     """Agent that communicates with Google Gemini and uses tools to query WhatsApp history."""
 
-    def __init__(self, api_key: str, model_name: str, db: DatabaseManager, bot_client: Any = None):
+    def __init__(
+        self,
+        api_key: str,
+        model_name: str,
+        db: DatabaseManager,
+        bot_client: Any = None,
+        timezone_name: str = "Asia/Kolkata",
+        memory_turns: int = 6,
+        memory_ttl_minutes: int = 20,
+    ):
         self.client = genai.Client(api_key=api_key)
         self.model_name = model_name
         self.db = db
         self.bot_client = bot_client
+        self.timezone_name = timezone_name or "UTC"
+        self.memory_turns = max(0, int(memory_turns))
+        self.memory_ttl_seconds = max(0, int(memory_ttl_minutes) * 60)
+        self._history: deque[tuple[float, str, str]] = deque(
+            maxlen=max(1, self.memory_turns) if self.memory_turns > 0 else 1
+        )
+        self._history_lock = threading.Lock()
+
+    def clear_history(self) -> int:
+        """Clear stored multi-turn conversation memory and return how many turns were removed."""
+        with self._history_lock:
+            count = len(self._history)
+            self._history.clear()
+            return count
+
+    def _get_current_time_context(self) -> str:
+        """Build live local date/time string so relative date questions resolve accurately."""
+        try:
+            tz = ZoneInfo(self.timezone_name)
+            now = datetime.now(tz)
+            tz_label = self.timezone_name
+        except Exception:
+            now = datetime.now().astimezone()
+            tz_label = str(now.tzinfo or "local")
+
+        return (
+            f"Current Date & Time ({tz_label}): "
+            f"{now.strftime('%A, %Y-%m-%d %I:%M %p')} "
+            f"(Year={now.year}, Month={now.strftime('%B')}, Day={now.day}). "
+            f"Always use this exact current date/time when resolving relative time expressions "
+            f"like 'today', 'yesterday', 'this week', or 'last month'."
+        )
+
+    def _get_history_contents(self) -> list[types.Content]:
+        """Return valid non-expired conversation turns formatted as Gemini Content objects."""
+        if self.memory_turns <= 0:
+            return []
+
+        now_ts = time.time()
+        with self._history_lock:
+            if self.memory_ttl_seconds > 0:
+                valid = [item for item in self._history if (now_ts - item[0]) <= self.memory_ttl_seconds]
+                if len(valid) != len(self._history):
+                    self._history.clear()
+                    self._history.extend(valid)
+            snapshot = list(self._history)
+
+        contents: list[types.Content] = []
+        for _, user_text, model_text in snapshot:
+            contents.append(types.Content(role="user", parts=[types.Part.from_text(text=user_text)]))
+            contents.append(types.Content(role="model", parts=[types.Part.from_text(text=model_text)]))
+        return contents
+
+    def _record_turn(self, user_prompt: str, model_answer: str) -> None:
+        """Store a completed Q&A turn in bounded rolling memory."""
+        if self.memory_turns <= 0 or not user_prompt or not model_answer:
+            return
+        trimmed_user = user_prompt[:2500]
+        trimmed_model = model_answer[:3500]
+        with self._history_lock:
+            self._history.append((time.time(), trimmed_user, trimmed_model))
 
     def ocr_file_content(self, file_bytes: bytes, mimetype: str = "application/pdf", prompt: str = "") -> str:
         """Perform multimodal OCR on a scanned PDF, document, or image using Gemini Vision."""
@@ -164,18 +241,23 @@ class GeminiAgent:
             """
             return self.db.find_documents(query=query, chat_name_or_jid=contact_or_chat, limit=limit)
 
-        def send_document_to_chat(document_query_or_name: str) -> str:
+        def send_document_to_chat(document_query_or_name: str = "", message_id: str = "") -> str:
             """Locate and send the actual document file (PDF, DOCX, ZIP, etc.) directly into this WhatsApp self-chat.
             Use this when the user asks to send, get, receive, download, or deliver a document or file to them.
 
             Args:
                 document_query_or_name: Document filename or topic keyword (e.g. 'Tax Invoice', 'Yash COA Exam Form', 'ITR Report').
+                message_id: Optional exact WhatsApp message ID if known (for example from quoted message context).
             """
             if not self.bot_client:
                 return "Document sending is not configured on this bot client."
-            return self.bot_client.send_document_by_query(document_query_or_name)
+            return self.bot_client.send_document_by_query(query=document_query_or_name, message_id=message_id)
 
-        def read_and_ocr_document(document_query_or_name: str, specific_question: str = "") -> str:
+        def read_and_ocr_document(
+            document_query_or_name: str = "",
+            specific_question: str = "",
+            message_id: str = "",
+        ) -> str:
             """Download a document (Excel spreadsheet .xlsx, Word .docx, PowerPoint .pptx, PDF, CSV, text) and extract/analyze its contents.
             Works on Excel worksheets, Word tables/paragraphs, PowerPoint slides, and both digital & scanned PDFs.
             Use this when the user asks what is inside a document, asks to check amounts/totals/dates/tables/slides, or asks to inspect/analyze any file.
@@ -183,14 +265,19 @@ class GeminiAgent:
             Args:
                 document_query_or_name: Document filename or topic keyword (e.g. 'GDGC-WCE01.xlsx', 'report.docx', 'presentation.pptx', 'Tax Invoice.pdf').
                 specific_question: Optional specific question to answer (e.g. 'What is the grand total in sheet 1?', 'Summarize slide 3', 'What are the payment terms?').
+                message_id: Optional exact WhatsApp message ID if known (for example from quoted message context).
             """
             if not self.bot_client:
                 return "Document reading is not configured on this bot client."
-            return self.bot_client.read_and_ocr_document(document_query_or_name, specific_question=specific_question)
+            return self.bot_client.read_and_ocr_document(
+                query=document_query_or_name,
+                specific_question=specific_question,
+                message_id=message_id,
+            )
 
-        def read_document_content(document_query_or_name: str) -> str:
+        def read_document_content(document_query_or_name: str = "", message_id: str = "") -> str:
             """Alias for read_and_ocr_document."""
-            return read_and_ocr_document(document_query_or_name)
+            return read_and_ocr_document(document_query_or_name=document_query_or_name, message_id=message_id)
 
         def inspect_and_ocr_image(
             message_id: str = "",
@@ -286,10 +373,14 @@ class GeminiAgent:
             get_recent_chat_activity,
         ]
 
-    def ask(self, user_query: str) -> str:
-        """Send the user's query to Gemini with tool calling and return the response."""
+    def ask(self, user_query: str, quoted_context: str = "") -> str:
+        """Send the user's query to Gemini with tool calling, runtime date context, and rolling memory."""
+        effective_system_instruction = f"{SYSTEM_PROMPT}\n\n--- LIVE RUNTIME CONTEXT ---\n{self._get_current_time_context()}"
+        prompt_to_send = f"{user_query}\n\n{quoted_context}".strip() if quoted_context else user_query
+        history_contents = self._get_history_contents()
+
         config = types.GenerateContentConfig(
-            system_instruction=SYSTEM_PROMPT,
+            system_instruction=effective_system_instruction,
             tools=self._build_tools(),
             temperature=0.3,  # Low temperature for factual fidelity
             automatic_function_calling=types.AutomaticFunctionCallingConfig(
@@ -325,11 +416,13 @@ class GeminiAgent:
                 chat = self.client.chats.create(
                     model=model,
                     config=config,
+                    history=history_contents or None,
                 )
-                response = chat.send_message(user_query)
+                response = chat.send_message(prompt_to_send)
 
                 result = _extract_or_synthesize(chat, response)
                 if result:
+                    self._record_turn(prompt_to_send, result)
                     return result
                 return "I couldn't retrieve a response from Gemini. Please try again."
 

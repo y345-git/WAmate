@@ -18,6 +18,12 @@ class RichMessageInfo:
     media_mimetype: str = ""
     media_size: int = 0
     media_metadata: dict[str, Any] = field(default_factory=dict)
+    clean_text: str = ""
+    quoted_msg_id: str = ""
+    quoted_participant: str = ""
+    quoted_media_type: str = ""
+    quoted_filename: str = ""
+    quoted_snippet: str = ""
 
 
 class MessageDeduplicator:
@@ -137,9 +143,91 @@ def unwrap_message(msg: Message) -> Message:
     return msg
 
 
-def extract_rich_message_info(raw_msg: Message) -> RichMessageInfo:
-    """Extract comprehensive metadata, media attributes, and searchable text from any WhatsApp message."""
-    msg = unwrap_message(raw_msg)
+def _find_context_info(msg: Message) -> Any:
+    """Locate protobuf ContextInfo if this message quotes or replies to an earlier message."""
+    for attr in (
+        "extendedTextMessage",
+        "imageMessage",
+        "videoMessage",
+        "documentMessage",
+        "audioMessage",
+        "stickerMessage",
+        "contactMessage",
+        "locationMessage",
+    ):
+        sub = getattr(msg, attr, None)
+        if sub and sub.ListFields():
+            ctx = getattr(sub, "contextInfo", None)
+            if ctx and ctx.ListFields():
+                return ctx
+    return None
+
+
+def _extract_quote_context(ctx_info: Any) -> dict[str, str]:
+    """Extract quoted stanza ID, participant, media type, filename, and snippet from ContextInfo."""
+    result = {
+        "quoted_msg_id": "",
+        "quoted_participant": "",
+        "quoted_media_type": "",
+        "quoted_filename": "",
+        "quoted_snippet": "",
+    }
+    if not ctx_info or not ctx_info.ListFields():
+        return result
+
+    result["quoted_msg_id"] = str(getattr(ctx_info, "stanzaID", "") or "").strip()
+    result["quoted_participant"] = str(getattr(ctx_info, "participant", "") or "").strip()
+
+    raw_qm = getattr(ctx_info, "quotedMessage", None)
+    if not raw_qm or not raw_qm.ListFields():
+        return result
+
+    qm = unwrap_message(raw_qm)
+    if qm.conversation:
+        result["quoted_media_type"] = "text"
+        result["quoted_snippet"] = qm.conversation.strip()
+    elif qm.extendedTextMessage and qm.extendedTextMessage.text:
+        result["quoted_media_type"] = "text"
+        result["quoted_snippet"] = qm.extendedTextMessage.text.strip()
+    elif qm.documentMessage.ListFields():
+        doc = qm.documentMessage
+        fname = (doc.fileName or doc.title or "").strip()
+        cap = (doc.caption or "").strip()
+        result["quoted_media_type"] = "document"
+        result["quoted_filename"] = fname
+        result["quoted_snippet"] = f"Document: {fname or 'file'}" + (f" ({cap})" if cap else "")
+    elif qm.imageMessage.ListFields():
+        cap = (qm.imageMessage.caption or "").strip()
+        result["quoted_media_type"] = "image"
+        result["quoted_snippet"] = f"Image: {cap}" if cap else "Image (photo/screenshot)"
+    elif qm.videoMessage.ListFields():
+        cap = (qm.videoMessage.caption or "").strip()
+        result["quoted_media_type"] = "video"
+        result["quoted_snippet"] = f"Video: {cap}" if cap else "Video"
+    elif qm.audioMessage.ListFields():
+        is_ptt = bool(qm.audioMessage.PTT)
+        result["quoted_media_type"] = "voice_note" if is_ptt else "audio"
+        result["quoted_snippet"] = "Voice Note" if is_ptt else "Audio File"
+    elif qm.locationMessage.ListFields():
+        loc = qm.locationMessage
+        result["quoted_media_type"] = "location"
+        result["quoted_snippet"] = f"Location: {loc.name or loc.address or 'Shared Location'}"
+    elif qm.contactMessage.ListFields():
+        result["quoted_media_type"] = "contact"
+        result["quoted_snippet"] = f"Contact: {qm.contactMessage.displayName or 'vCard'}"
+    else:
+        for p_attr in ("pollCreationMessage", "pollCreationMessageV2", "pollCreationMessageV3"):
+            poll_obj = getattr(qm, p_attr, None)
+            if poll_obj and poll_obj.ListFields():
+                result["quoted_media_type"] = "poll"
+                result["quoted_snippet"] = f"Poll: {poll_obj.name or 'Untitled Poll'}"
+                break
+
+    return result
+
+
+def _extract_base_message_info(msg: Message, quote_snippet: str = "") -> RichMessageInfo:
+    """Extract core message fields and searchable text from an already-unwrapped Message."""
 
     # 1. Document Message (PDF, DOCX, ZIP, etc.)
     doc = None
@@ -419,7 +507,8 @@ def extract_rich_message_info(raw_msg: Message) -> RichMessageInfo:
     # 10. Extended Text Message (Handles link previews & replies/quotes)
     if msg.extendedTextMessage.ListFields():
         ext = msg.extendedTextMessage
-        body = ext.text or ""
+        raw_body = ext.text or ""
+        body = raw_body
         title = (ext.title or "").strip()
         desc = (ext.description or "").strip()
 
@@ -433,19 +522,6 @@ def extract_rich_message_info(raw_msg: Message) -> RichMessageInfo:
             preview_str = " - ".join(preview_parts)
             body = f"{body} [Link Preview: {preview_str}]" if body else f"[Link Preview: {preview_str}]"
 
-        # Extract snippet of quoted message if this was a reply
-        quote_snippet = ""
-        if ext.contextInfo and ext.contextInfo.quotedMessage:
-            qm = ext.contextInfo.quotedMessage
-            if qm.conversation:
-                quote_snippet = qm.conversation
-            elif qm.extendedTextMessage and qm.extendedTextMessage.text:
-                quote_snippet = qm.extendedTextMessage.text
-            elif qm.documentMessage and qm.documentMessage.fileName:
-                quote_snippet = f"Document: {qm.documentMessage.fileName}"
-            elif qm.imageMessage and qm.imageMessage.caption:
-                quote_snippet = f"Image: {qm.imageMessage.caption}"
-
         if quote_snippet:
             short_quote = (quote_snippet[:60] + "...") if len(quote_snippet) > 60 else quote_snippet
             text = f"{body} [Replying to: \"{short_quote}\"]"
@@ -457,13 +533,40 @@ def extract_rich_message_info(raw_msg: Message) -> RichMessageInfo:
             metadata["link_title"] = title
             metadata["link_description"] = desc
 
-        return RichMessageInfo(text=text, media_type="text", media_metadata=metadata)
+        return RichMessageInfo(
+            text=text,
+            media_type="text",
+            media_metadata=metadata,
+            clean_text=raw_body.strip(),
+        )
 
     # 11. Plain Conversation
     if msg.conversation:
-        return RichMessageInfo(text=msg.conversation, media_type="text")
+        return RichMessageInfo(
+            text=msg.conversation,
+            media_type="text",
+            clean_text=msg.conversation.strip(),
+        )
 
     return RichMessageInfo(text="", media_type="text")
+
+
+def extract_rich_message_info(raw_msg: Message) -> RichMessageInfo:
+    """Extract comprehensive metadata, media attributes, and searchable text from any WhatsApp message."""
+    msg = unwrap_message(raw_msg)
+    quote_ctx = _extract_quote_context(_find_context_info(msg))
+    info = _extract_base_message_info(msg, quote_snippet=quote_ctx["quoted_snippet"])
+    if quote_ctx["quoted_msg_id"] or quote_ctx["quoted_snippet"]:
+        info.quoted_msg_id = quote_ctx["quoted_msg_id"]
+        info.quoted_participant = quote_ctx["quoted_participant"]
+        info.quoted_media_type = quote_ctx["quoted_media_type"]
+        info.quoted_filename = quote_ctx["quoted_filename"]
+        info.quoted_snippet = quote_ctx["quoted_snippet"]
+        if quote_ctx["quoted_msg_id"]:
+            info.media_metadata["quoted_msg_id"] = quote_ctx["quoted_msg_id"]
+    if not info.clean_text:
+        info.clean_text = info.text.strip()
+    return info
 
 
 def _extract_xlsx_text(path: Path, max_chars: int = 18000) -> str:

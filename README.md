@@ -43,6 +43,8 @@ WAmate: 📊 WAmate Second Brain Status
 ## 🌟 Key Features
 
 * 🔒 **100% Self-Chat Isolation:** Listens **only** in your personal "Message yourself" ("You") chat. Never monitors, snoops on, or sends messages to external contacts or group chats.
+* 💬 **Multi-Turn Memory & Swipe-Reply Awareness:** Remembers your recent self-chat Q&A context so follow-ups (*"send me the second one"*, *"calculate GST on that"*) work naturally. You can also swipe/reply to any message, photo, or PDF directly with `!ask` or `!get`, or run `!clear` to reset context.
+* 🕒 **Timezone-Accurate Temporal Context & Async Processing:** Injects your live local date/time (`TZ`) into every query so *"today"*, *"yesterday"*, and *"this week"* resolve accurately, while executing AI calls asynchronously so incoming message sync never stalls.
 * ⚡ **Ultra-Fast Batch Indexing (1,000+ msgs/sec):** High-performance SQLite batch engine syncs tens of thousands of past messages in seconds with a live console progress counter.
 * 📄 **Universal File & Document Analysis (`!get` / `!send`):** Automatically extracts and analyzes contents inside all day-to-day shared WhatsApp files: plain text (`.txt`), logs (`.log`), notes (`.md`), Excel (`.xlsx`, `.xls`, `.csv`), Word (`.docx`, `.rtf`, `.odt`), PowerPoint (`.pptx`, `.ppt`), vCard contacts (`.vcf`), calendar events (`.ics`), Jupyter notebooks (`.ipynb`), ZIP archives (`.zip`), source code (`.py`, `.js`, etc.), and PDFs. Gemini can calculate totals, summarize slide decks, inspect tables, and deliver the actual files directly into your chat.
 * 💾 **30-Day Expiration Protection & Zero-Cost Media Storage:** Automatically pre-downloads incoming photos, documents (PDFs, Excel, Word), and voice notes locally to disk with **zero Gemini API calls**. WhatsApp CDN links typically expire after 30 days; by caching files locally while fresh, documents and receipts remain permanently preserved and available for on-demand AI OCR analysis months or years later!
@@ -64,10 +66,12 @@ All commands run directly in your WhatsApp **"Message yourself"** chat:
 
 | Command | Action | Example |
 | :--- | :--- | :--- |
-| `!ask <question>` | Ask anything about your messages, chats, or media | `!ask what did Alex message me about the project deadline?` |
+| `!ask <question>` | Ask anything about your messages, chats, or media (supports follow-ups & swipe-replies) | `!ask what did Alex message me about the project deadline?` |
 | `!get <filename>` | Locate and deliver the real document file directly to you | `!get Q3 financial summary pdf` |
 | `!send <filename>` | Alternative trigger to fetch and deliver a file | `!send project roadmap 2026` |
+| `!clear` | Clear recent multi-turn conversation memory (`!new`, `!forget`) | `!clear` |
 | `!status` / `!stats` | View real-time database stats, message counts, and sync state | `!status` |
+| `!help` | Show all self-chat commands and shortcuts | `!help` |
 | `!unlink` | Unlink current WhatsApp account (keeps message history database) | `!unlink` |
 | `!unlink --delete-data` | Unlink account and wipe all databases, sessions, and downloads | `!reset` |
 
@@ -169,6 +173,8 @@ GEMINI_API_KEY=AIzaSy...your_gemini_api_key_here
 
 # [OPTIONAL] Gemini Model (default: gemini-3.5-flash-lite)
 GEMINI_MODEL=gemini-3.5-flash-lite
+CONVERSATION_MEMORY_TURNS=6
+CONVERSATION_MEMORY_TTL_MINUTES=20
 
 # [OPTIONAL] Command Prefix in Self-Chat (default: !ask)
 COMMAND_PREFIX=!ask

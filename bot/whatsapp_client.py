@@ -19,6 +19,7 @@ from .database import DatabaseManager, _format_timestamp
 from .gemini_agent import GeminiAgent
 from .utils import (
     MessageDeduplicator,
+    RichMessageInfo,
     extract_rich_message_info,
     extract_document_text,
     format_for_whatsapp,
@@ -72,6 +73,11 @@ class WhatsAppBot:
             "last_active": "Never",
         }
         self._media_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="MediaDownloader")
+
+        # Async Query Executor so self-chat AI queries never block Neonize's MessageEv callback
+        self._query_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="QueryWorker")
+        self._active_queries = 0
+        self._query_state_lock = threading.Lock()
 
         self._register_handlers()
 
@@ -372,7 +378,16 @@ class WhatsAppBot:
                 # Handle command ONLY in self-chat sent by me
                 if is_self_chat and is_from_me:
                     self.last_self_chat_jid = chat
-                    self._handle_self_chat_message(client, message, msg_id, text, chat)
+                    command_text = (rich_info.clean_text or text).strip()
+                    quoted_context = self._build_quoted_context(rich_info)
+                    self._handle_self_chat_message(
+                        client,
+                        message,
+                        msg_id,
+                        command_text,
+                        chat,
+                        quoted_context=quoted_context,
+                    )
 
             except Exception as e:
                 logger.exception("Error handling MessageEv: %s", e)
@@ -382,8 +397,136 @@ class WhatsAppBot:
         def on_logged_out(client: NewClient, event: LoggedOutEv):
             logger.warning("Session logged out from WhatsApp. Re-authentication will be required.")
 
+    def _begin_query(self) -> None:
+        with self._query_state_lock:
+            self._active_queries += 1
+            self._user_active_event.set()
+
+    def _end_query(self) -> None:
+        with self._query_state_lock:
+            self._active_queries = max(0, self._active_queries - 1)
+            if self._active_queries == 0:
+                self._user_active_event.clear()
+
+    def _send_self_chat_reply(
+        self, client: NewClient, chat_jid: Any, original_message: MessageEv, text: str
+    ) -> None:
+        """Send a reply to self-chat with deduplication tracking and direct-send fallback."""
+        try:
+            resp = client.reply_message(text, original_message)
+            if resp and hasattr(resp, "ID"):
+                self.dedup.add(resp.ID)
+            logger.info("Sent reply to self-chat.")
+        except Exception as e:
+            logger.warning("reply_message failed (%s), sending directly to chat...", e)
+            try:
+                resp = client.send_message(chat_jid, text)
+                if resp and hasattr(resp, "ID"):
+                    self.dedup.add(resp.ID)
+                logger.info("Sent direct message to self-chat.")
+            except Exception as e2:
+                logger.exception("Failed to send response to self-chat: %s", e2)
+
+    def _build_quoted_context(self, rich_info: RichMessageInfo) -> str:
+        """Resolve full context for a WhatsApp swipe-reply / quoted message."""
+        if not rich_info.quoted_msg_id and not rich_info.quoted_snippet:
+            return ""
+
+        lines = ["[Quoted Message Context]"]
+        db_msg = None
+        if rich_info.quoted_msg_id:
+            lines.append(f"• Message ID: {rich_info.quoted_msg_id}")
+            db_msg = self.db.get_message_raw(rich_info.quoted_msg_id)
+
+        if db_msg:
+            chat_label = db_msg.get("chat_name") or db_msg.get("chat_jid") or "Unknown"
+            sender_label = db_msg.get("sender_name") or "Unknown"
+            ts_label = _format_timestamp(db_msg.get("timestamp"))
+            media_type = db_msg.get("media_type") or "text"
+            filename = db_msg.get("filename") or rich_info.quoted_filename
+            q_text = (db_msg.get("text") or rich_info.quoted_snippet or "").strip()
+
+            lines.append(f"• Chat: {chat_label}")
+            lines.append(f"• Sender: {sender_label}")
+            lines.append(f"• Timestamp: {ts_label}")
+            lines.append(f"• Media Type: {media_type}")
+            if filename:
+                lines.append(f"• Filename: {filename}")
+            if q_text:
+                trimmed = (q_text[:2000] + "...") if len(q_text) > 2000 else q_text
+                lines.append(f"• Quoted Content: {trimmed}")
+        else:
+            if rich_info.quoted_media_type:
+                lines.append(f"• Media Type: {rich_info.quoted_media_type}")
+            if rich_info.quoted_filename:
+                lines.append(f"• Filename: {rich_info.quoted_filename}")
+            if rich_info.quoted_snippet:
+                trimmed = (rich_info.quoted_snippet[:2000] + "...") if len(rich_info.quoted_snippet) > 2000 else rich_info.quoted_snippet
+                lines.append(f"• Quoted Content: {trimmed}")
+
+        return "\n".join(lines)
+
+    @staticmethod
+    def _matches_command_trigger(text_lower: str, trigger: str) -> bool:
+        return text_lower == trigger or text_lower.startswith(f"{trigger} ") or text_lower.startswith(f"{trigger}\n")
+
+    def _process_self_chat_query(
+        self,
+        client: NewClient,
+        message: MessageEv,
+        msg_id: str,
+        chat_jid: Any,
+        query: str,
+        quoted_context: str = "",
+    ) -> None:
+        """Execute an AI self-chat query in the background worker pool."""
+        source = message.Info.MessageSource
+        chat = source.Chat
+        sender = source.Sender
+
+        try:
+            logger.info("Processing self-chat query: '%s'", query)
+            try:
+                client.send_chat_presence(
+                    chat_jid, ChatPresence.CHAT_PRESENCE_COMPOSING, ChatPresenceMedia.CHAT_PRESENCE_MEDIA_TEXT
+                )
+            except Exception as pe:
+                logger.debug("Could not send typing presence indicator: %s", pe)
+
+            try:
+                react_pending = client.build_reaction(chat, sender, msg_id, "⏳")
+                client.send_message(chat_jid, react_pending)
+            except Exception as re_err:
+                logger.debug("Could not send pending reaction: %s", re_err)
+
+            raw_answer = self.gemini.ask(query, quoted_context=quoted_context)
+            answer = format_for_whatsapp(raw_answer)
+            self._send_self_chat_reply(client, chat_jid, message, answer)
+        except Exception as e:
+            logger.exception("Unhandled error in async query worker: %s", e)
+            self._send_self_chat_reply(client, chat_jid, message, f"⚠️ *Error processing request:*\n`{e}`")
+        finally:
+            self._end_query()
+            try:
+                client.send_chat_presence(
+                    chat_jid, ChatPresence.CHAT_PRESENCE_PAUSED, ChatPresenceMedia.CHAT_PRESENCE_MEDIA_TEXT
+                )
+            except Exception:
+                pass
+            try:
+                react_done = client.build_reaction(chat, sender, msg_id, "✅")
+                client.send_message(chat_jid, react_done)
+            except Exception:
+                pass
+
     def _handle_self_chat_message(
-        self, client: NewClient, message: MessageEv, msg_id: str, text: str, chat_jid: Any
+        self,
+        client: NewClient,
+        message: MessageEv,
+        msg_id: str,
+        text: str,
+        chat_jid: Any,
+        quoted_context: str = "",
     ) -> None:
         """Handle commands and queries received in the self-chat."""
         if not text:
@@ -391,9 +534,43 @@ class WhatsAppBot:
 
         text_lower = text.lower().strip()
 
+        # Check for !clear / !new / !forget conversation memory reset commands (before !unlink)
+        clear_triggers = ["!clear", "!new", "!forget", "!reset-chat"]
+        if any(self._matches_command_trigger(text_lower, ct) for ct in clear_triggers):
+            if self.dedup.contains(msg_id):
+                return
+            self.dedup.add(msg_id)
+            cleared = self.gemini.clear_history()
+            reply = (
+                "🧹 *Conversation Memory Cleared*\n\n"
+                f"Removed {cleared} recent Q&A turn(s) from active context. "
+                "Your chat database and stored media remain intact — ask a new question anytime!"
+            )
+            self._send_self_chat_reply(client, chat_jid, message, reply)
+            return
+
+        # Check for !help / !commands command
+        help_triggers = ["!help", "!commands", "!?"]
+        if any(self._matches_command_trigger(text_lower, ht) for ht in help_triggers):
+            if self.dedup.contains(msg_id):
+                return
+            self.dedup.add(msg_id)
+            help_text = (
+                "🤖 *WAmate Self-Chat Commands*\n\n"
+                f"• `{self.prefix} <question>` — Search chats, inspect photos/PDFs/spreadsheets, summarize messages, or ask follow-ups\n"
+                "• `!get <file or topic>` — Download & send a document directly here _(aliases: `!send`, `!fetch`, `!doc`, `!file`, `!download`)_\n"
+                "• *Swipe-Reply Support* — Swipe/reply to any photo, PDF, document, or message with `!ask` or `!get` to act directly on it\n"
+                "• `!clear` — Reset conversation memory to start a fresh topic _(aliases: `!new`, `!forget`)_\n"
+                "• `!status` — View indexed messages, stored 30-day-safe media, OCR cache & model info\n"
+                "• `!help` — Show this command guide\n"
+                "• `!unlink` — Disconnect WhatsApp session _(add `delete-data` to wipe local DB)_"
+            )
+            self._send_self_chat_reply(client, chat_jid, message, help_text)
+            return
+
         # Check for account unlinking / logout commands in self-chat
         unlink_triggers = ["!unlink", "!logout", "!reset"]
-        if any(text_lower.startswith(ut) for ut in unlink_triggers):
+        if any(self._matches_command_trigger(text_lower, ut) for ut in unlink_triggers):
             if self.dedup.contains(msg_id):
                 return
             self.dedup.add(msg_id)
@@ -428,7 +605,7 @@ class WhatsAppBot:
 
         # Check for !status / !stats / !info commands in self-chat
         status_triggers = ["!status", "!stats", "!info"]
-        if any(text_lower == st or text_lower.startswith(f"{st} ") for st in status_triggers):
+        if any(self._matches_command_trigger(text_lower, st) for st in status_triggers):
             if self.dedup.contains(msg_id):
                 return
             self.dedup.add(msg_id)
@@ -468,21 +645,15 @@ class WhatsAppBot:
                 f"• *Database Size:* {stats['db_size_mb']} MB\n"
                 f"• *Sync Status:* {sync_state}\n"
                 f"• *AI Model:* `{Config.GEMINI_MODEL}`\n\n"
-                "_Send `!ask <question>` to search or query your messages!_"
+                "_Send `!help` to view all commands!_"
             )
-            try:
-                client.reply_message(reply, message)
-            except Exception:
-                try:
-                    client.send_message(chat_jid, reply)
-                except Exception as e:
-                    logger.warning("Failed to send status reply: %s", e)
+            self._send_self_chat_reply(client, chat_jid, message, reply)
             return
 
         matched_prefix = None
         recognized_prefixes = [self.prefix.lower(), "!get", "!send", "!fetch", "!doc", "!file", "!download"]
         for pfx in recognized_prefixes:
-            if text_lower.startswith(pfx):
+            if self._matches_command_trigger(text_lower, pfx):
                 matched_prefix = pfx
                 break
 
@@ -495,84 +666,53 @@ class WhatsAppBot:
         self.dedup.add(msg_id)
 
         raw_query = text[len(matched_prefix):].strip()
+        is_doc_delivery_cmd = matched_prefix in ["!get", "!send", "!fetch", "!download", "!file", "!doc"]
+
         # Direct action prefixes like !get, !send, !file automatically map to document delivery queries
-        if matched_prefix in ["!get", "!send", "!fetch", "!download", "!file", "!doc"]:
-            query = f"send me the {raw_query}" if not raw_query.lower().startswith(("send", "get", "fetch", "deliver")) else raw_query
+        if is_doc_delivery_cmd:
+            if raw_query:
+                query = f"send me the {raw_query}" if not raw_query.lower().startswith(("send", "get", "fetch", "deliver")) else raw_query
+            elif quoted_context:
+                query = "send me the quoted file or document shown below"
+            else:
+                query = ""
         else:
-            query = raw_query
+            if raw_query:
+                query = raw_query
+            elif quoted_context:
+                query = "Analyze, summarize, or explain the quoted message/media below."
+            else:
+                query = ""
 
         if not query:
             hint = (
-                f"🤖 *WhatsApp AI Assistant*\n\n"
-                f"Ask me anything about your chats or request files directly!\n\n"
+                "🤖 *WhatsApp AI Assistant*\n\n"
+                "Ask me anything about your chats or request files directly!\n\n"
                 f"• `{self.prefix} get me the latest invoices`\n"
-                f"• `{self.prefix} send me the Reimagine 2026 pdf`\n"
-                f"• `!get invoices`\n"
+                f"• `{self.prefix} send me the project proposal pdf`\n"
+                "• `!get invoices`\n"
                 f"• `{self.prefix} what did Alex message me?`\n"
-                f"• `{self.prefix} summarize what happened today`"
+                f"• `{self.prefix} summarize what happened today`\n"
+                "• Send `!help` for all commands"
             )
-            try:
-                resp = client.reply_message(hint, message)
-                if resp and hasattr(resp, "ID"):
-                    self.dedup.add(resp.ID)
-            except Exception:
-                resp = client.send_message(chat_jid, hint)
-                if resp and hasattr(resp, "ID"):
-                    self.dedup.add(resp.ID)
+            self._send_self_chat_reply(client, chat_jid, message, hint)
             return
 
-        # Pause any background idle workers while user is actively querying
-        self._user_active_event.set()
-        logger.info("Processing self-chat query: '%s'", query)
-
-        # Show real-time typing indicator and hourglass reaction in WhatsApp self-chat
-        source = message.Info.MessageSource
-        chat = source.Chat
-        sender = source.Sender
-
+        # Dispatch off the Neonize event callback onto the background query worker pool
+        self._begin_query()
         try:
-            client.send_chat_presence(chat_jid, ChatPresence.CHAT_PRESENCE_COMPOSING, ChatPresenceMedia.CHAT_PRESENCE_MEDIA_TEXT)
-        except Exception as pe:
-            logger.debug("Could not send typing presence indicator: %s", pe)
-
-        try:
-            react_pending = client.build_reaction(chat, sender, msg_id, "⏳")
-            client.send_message(chat_jid, react_pending)
-        except Exception as re_err:
-            logger.debug("Could not send pending reaction: %s", re_err)
-
-        try:
-            # Generate answer using Gemini with access to the database
-            raw_answer = self.gemini.ask(query)
-            answer = format_for_whatsapp(raw_answer)
-
-            # Reply strictly in self-chat
-            try:
-                resp = client.reply_message(answer, message)
-                if resp and hasattr(resp, "ID"):
-                    self.dedup.add(resp.ID)
-                logger.info("Sent reply to self-chat.")
-            except Exception as e:
-                logger.warning("reply_message failed (%s), sending directly to chat...", e)
-                try:
-                    resp = client.send_message(chat_jid, answer)
-                    if resp and hasattr(resp, "ID"):
-                        self.dedup.add(resp.ID)
-                    logger.info("Sent direct message to self-chat.")
-                except Exception as e2:
-                    logger.exception("Failed to send response to self-chat: %s", e2)
-        finally:
-            self._user_active_event.clear()
-            # Clear typing indicator and update reaction to checkmark
-            try:
-                client.send_chat_presence(chat_jid, ChatPresence.CHAT_PRESENCE_PAUSED, ChatPresenceMedia.CHAT_PRESENCE_MEDIA_TEXT)
-            except Exception:
-                pass
-            try:
-                react_done = client.build_reaction(chat, sender, msg_id, "✅")
-                client.send_message(chat_jid, react_done)
-            except Exception:
-                pass
+            self._query_executor.submit(
+                self._process_self_chat_query,
+                client,
+                message,
+                msg_id,
+                chat_jid,
+                query,
+                quoted_context,
+            )
+        except Exception as e:
+            self._end_query()
+            logger.exception("Failed to submit self-chat query to worker pool: %s", e)
 
     def sync_address_book_contacts(self) -> int:
         """Sync contacts and LID mappings from whatsmeow's session store into messages database.
@@ -733,7 +873,27 @@ class WhatsAppBot:
             logger.debug("Media download failed for message %s: %s", msg_id, err_str)
             return None, filename, mimetype, f"WhatsApp download failed: {err_str}"
 
-    def send_document_by_query(self, query: str, target_jid: Any = None, max_count: int = 1) -> str:
+    def _resolve_document_matches(
+        self, query: str = "", message_id: str = "", limit: int = 15
+    ) -> list[dict[str, Any]]:
+        """Resolve document candidate(s) by exact WhatsApp message_id first, or search query."""
+        if message_id:
+            raw = self.db.get_message_raw(message_id.strip())
+            if raw:
+                return [
+                    {
+                        "id": raw["id"],
+                        "filename": raw.get("filename") or "document",
+                        "chat": raw.get("chat_name") or raw.get("chat_jid") or "Unknown",
+                    }
+                ]
+        if query:
+            return self.db.find_documents(query=query, limit=limit)
+        return []
+
+    def send_document_by_query(
+        self, query: str = "", target_jid: Any = None, max_count: int = 1, message_id: str = ""
+    ) -> str:
         """Find matching document(s), download them, and send the actual file(s) directly into self-chat.
         If a candidate file link has expired on WhatsApp CDN (410), automatically tries subsequent matches.
         """
@@ -741,13 +901,14 @@ class WhatsAppBot:
         if not dest_jid:
             return "Cannot send document: self-chat destination JID is not yet available."
 
-        matches = self.db.find_documents(query=query, limit=15)
+        matches = self._resolve_document_matches(query=query, message_id=message_id, limit=15)
         if not matches:
-            return f"No document matching '{query}' found in your chats."
+            target_desc = message_id or query
+            return f"No document matching '{target_desc}' found in your chats."
 
         # Support sending multiple files for plural requests ("invoices", "bills", "files", "all")
         plural_keywords = ["invoices", "bills", "files", "documents", "pdfs", "all", "reports", "forms"]
-        if max_count <= 1 and any(pw in query.lower() for pw in plural_keywords):
+        if not message_id and max_count <= 1 and any(pw in query.lower() for pw in plural_keywords):
             target_send = 3
         else:
             target_send = max(1, max_count)
@@ -798,11 +959,14 @@ class WhatsAppBot:
                 )
             return f"Found matching documents for '{query}', but could not download them from WhatsApp."
 
-    def read_and_ocr_document(self, query: str, specific_question: str = "") -> str:
+    def read_and_ocr_document(
+        self, query: str = "", specific_question: str = "", message_id: str = ""
+    ) -> str:
         """Find matching document, download it, and extract structured text (Excel, Word, PowerPoint, PDF, CSV, Text) or run Gemini Vision OCR on scanned PDFs."""
-        matches = self.db.find_documents(query=query, limit=10)
+        matches = self._resolve_document_matches(query=query, message_id=message_id, limit=10)
         if not matches:
-            return f"No document matching '{query}' found in your chats."
+            target_desc = message_id or query
+            return f"No document matching '{target_desc}' found in your chats."
 
         for doc_info in matches:
             msg_id = doc_info["id"]
@@ -866,9 +1030,9 @@ class WhatsAppBot:
 
         return f"Found documents matching '{query}', but could not download their contents (media links may have expired on WhatsApp servers)."
 
-    def read_document_by_query(self, query: str) -> str:
+    def read_document_by_query(self, query: str = "", message_id: str = "") -> str:
         """Alias for backward compatibility."""
-        return self.read_and_ocr_document(query)
+        return self.read_and_ocr_document(query=query, message_id=message_id)
 
     def inspect_and_ocr_image(
         self,
@@ -1367,6 +1531,10 @@ class WhatsAppBot:
         except Exception:
             pass
         try:
+            self._query_executor.shutdown(wait=False)
+        except Exception:
+            pass
+        try:
             if hasattr(self, "client") and self.client.is_connected:
                 self.client.disconnect()
         except Exception as e:
@@ -1408,6 +1576,11 @@ class WhatsAppBot:
         """Unlink the WhatsApp account, remove session credentials, and optionally delete all saved messages/data."""
         logger.info("Unlinking WhatsApp account (delete_data=%s)...", delete_data)
         self._stop_worker_event.set()
+        for executor in (self._media_executor, self._query_executor):
+            try:
+                executor.shutdown(wait=False)
+            except Exception:
+                pass
         if self._media_storage_thread and self._media_storage_thread.is_alive():
             self._media_storage_thread.join(timeout=2.0)
         if self._idle_worker_thread and self._idle_worker_thread.is_alive():

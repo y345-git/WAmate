@@ -10,6 +10,8 @@ class Config:
     # Gemini Configuration
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "").strip()
     GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite").strip()
+    CONVERSATION_MEMORY_TURNS: int = int(os.getenv("CONVERSATION_MEMORY_TURNS", "6"))
+    CONVERSATION_MEMORY_TTL_MINUTES: int = int(os.getenv("CONVERSATION_MEMORY_TTL_MINUTES", "20"))
 
     # WhatsApp Bot Configuration
     COMMAND_PREFIX: str = os.getenv("COMMAND_PREFIX", "!ask").strip()

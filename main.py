@@ -227,6 +227,9 @@ def main():
         api_key=Config.GEMINI_API_KEY,
         model_name=Config.GEMINI_MODEL,
         db=db,
+        timezone_name=Config.TZ,
+        memory_turns=Config.CONVERSATION_MEMORY_TURNS,
+        memory_ttl_minutes=Config.CONVERSATION_MEMORY_TTL_MINUTES,
     )
 
     logger.info("Initializing WhatsApp Bot...")
