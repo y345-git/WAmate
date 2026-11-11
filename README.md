@@ -51,6 +51,7 @@ WAmate: 📊 WAmate Second Brain Status
 * 🔑 **Automatic Multi-Key & Model Rotation (`GEMINI_API_KEYS`):** Configure multiple comma-separated Gemini API keys to automatically rotate past per-key `429` rate limits alongside candidate model fallbacks.
 * 👁️ **Multimodal AI Vision & On-Demand OCR:** Powered by Google Gemini to analyze scanned receipts, handwritten notes, whiteboards, bills, and visual items (clothing colors, objects, payment screenshots) on-demand whenever you ask, caching results permanently in SQLite for **0ms repeat queries with zero extra API calls**.
 * 🛡️ **Anti-Delete & Edit Vault:** Captures real-time Delete-for-Everyone (`REVOKE`) and message edit (`MESSAGE_EDIT`) events — preserving original wording, revision timelines, and any downloaded deleted media (`!deleted`, `!edits`, or `!ask`).
+* 🌐 **Web Search & Media Browser UI:** Zero-dependency local dark-mode dashboard (`http://127.0.0.1:8765`) for instant FTS5 full-text search across messages, pre-indexed PDFs/spreadsheets, image previews, voice note playback, Anti-Delete Vault inspection, and direct Ask AI queries — private by default for localhost or SSH tunneling.
 * 🔗 **Link Preview & Web Metadata Search:** Automatically indexes webpage titles, descriptions, and metadata from shared URLs (GitHub repositories, YouTube videos, Amazon/e-commerce products, technical blogs, news articles), making shared links instantly searchable by topic or keyword.
 * 🆔 **Cryptographic WhatsApp LID Resolution:** Automatically cross-references WhatsApp's 15-digit privacy LIDs (`@lid`) against your phone address book, accurately identifying real contact names in group chats.
 * ⏳ **Real-Time Visual Feedback:** Reacts immediately with an hourglass **`⏳`** on your message bubble when a query begins, switching to a checkmark **`✅`** once completed.
@@ -88,16 +89,23 @@ You can manage WAmate directly from your terminal:
 # 1. Print indexing and database statistics without starting the bot
 python3 main.py --status
 
-# 2. Prune redundant raw message BLOBs and VACUUM database to reclaim disk space
+# 2. Launch only the Web Search & Media Browser UI (without connecting WhatsApp)
+python3 main.py --web-only
+
+# 3. Access the Web UI running on a remote VPS safely via SSH port forwarding
+# Then open http://127.0.0.1:8765 in your local browser:
+ssh -N -L 8765:127.0.0.1:8765 root@YOUR_VPS_IP
+
+# 4. Prune redundant raw message BLOBs and VACUUM database to reclaim disk space
 python3 main.py --prune-db
 
-# 3. Unlink account (prompts for confirmation; message history preserved)
+# 5. Unlink account (prompts for confirmation; message history preserved)
 python3 main.py --unlink
 
-# 4. Unlink account and wipe all databases and downloaded files
+# 6. Unlink account and wipe all databases and downloaded files
 python3 main.py --unlink --delete-data
 
-# 5. Immediate headless reset (skips confirmation prompt; ideal for Docker/scripts)
+# 7. Immediate headless reset (skips confirmation prompt; ideal for Docker/scripts)
 python3 main.py --reset -y
 ```
 
@@ -211,6 +219,13 @@ ENABLE_LOCAL_DOC_INDEX=true
 ENABLE_LOCAL_OCR=false
 # Optional live self-chat alert when someone deletes a message for everyone
 ANTI_DELETE_NOTIFY=false
+
+# [RECOMMENDED] Local Web Search & Media Browser UI (binds to localhost by default)
+ENABLE_WEB_UI=true
+WEB_UI_HOST=127.0.0.1
+WEB_UI_PORT=8765
+# Optional password (recommended if exposing beyond localhost/Tailscale)
+WEB_UI_PASSWORD=
 ```
 
 ---
@@ -278,6 +293,7 @@ Once WAmate completes its initial sync, try these queries in your self-chat:
 ## 🔒 Privacy & Local Security
 
 * **Zero Cloud History Storage:** Your message history, contact names, and media stay 100% on your local machine or private server in SQLite.
+* **Localhost-First Web UI:** The built-in Web Search UI binds to `127.0.0.1:8765` by default with optional HTTP Basic Auth (`WEB_UI_PASSWORD`) and strict download-directory path checks so it is never exposed publicly unless you explicitly allow it.
 * **Isolated Triggering:** WAmate ignores messages in all external 1-on-1 and group chats. Only commands issued by **you in your self-chat** trigger the assistant.
 * **Safe Repository Defaults:** The `.gitignore` excludes session databases, SQLite message stores, `.env`, and downloaded files.
 

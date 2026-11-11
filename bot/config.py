@@ -64,6 +64,12 @@ class Config:
     # Anti-Delete & Edit Vault (always preserves deleted/edited originals in SQLite; set true for live self-chat alerts)
     ANTI_DELETE_NOTIFY: bool = os.getenv("ANTI_DELETE_NOTIFY", "false").lower() in ("true", "1", "yes")
 
+    # Lightweight Web Search & Media Browser UI (binds cleanly to localhost by default for SSH tunnel / Tailscale safety)
+    ENABLE_WEB_UI: bool = os.getenv("ENABLE_WEB_UI", "true").lower() in ("true", "1", "yes")
+    WEB_UI_HOST: str = os.getenv("WEB_UI_HOST", "127.0.0.1").strip() or "127.0.0.1"
+    WEB_UI_PORT: int = int(os.getenv("WEB_UI_PORT", "8765").strip() or "8765")
+    WEB_UI_PASSWORD: str = os.getenv("WEB_UI_PASSWORD", "").strip()
+
     @staticmethod
     def get_tesseract_path() -> str | None:
         """Return path to the system tesseract binary if installed, else None."""
@@ -88,6 +94,23 @@ class Config:
         suffix = f" ({indexed_count:,} indexed, 0 API cost)" if indexed_count is not None else " (0 API cost)"
         prefix = "Enabled" if concise else "Active 🟢"
         return f"{prefix}{suffix}"
+
+    @classmethod
+    def describe_web_ui(cls, concise: bool = False, running: bool = True) -> str:
+        """Return consistent human-readable status for the Web Search UI across !status and --status."""
+        if not cls.ENABLE_WEB_UI:
+            return "Disabled"
+        url = f"http://{cls.WEB_UI_HOST}:{cls.WEB_UI_PORT}"
+        if not running:
+            return f"Configured ({url}, bind failed)"
+        prefix = "Enabled" if concise else "Active 🌐"
+        if cls.WEB_UI_PASSWORD:
+            auth_note = "password-protected" if concise else "🔒"
+        elif cls.WEB_UI_HOST in ("127.0.0.1", "localhost", "::1"):
+            auth_note = "local-only"
+        else:
+            auth_note = "open host ⚠️"
+        return f"{prefix} ({url}, {auth_note})"
 
     @classmethod
     def ensure_data_dir(cls) -> None:

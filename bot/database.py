@@ -1923,3 +1923,312 @@ class DatabaseManager:
                 "newest_date": _format_timestamp(newest_ts) if newest_ts else "N/A",
                 "db_size_mb": db_size_mb,
             }
+
+    @staticmethod
+    def _format_web_message_row(r: sqlite3.Row) -> dict[str, Any]:
+        """Convert a database message row (+ optional media_ocr_cache join) into a Web UI payload dict."""
+        keys = set(r.keys())
+        sender = "You" if r["is_from_me"] else (r["sender_name"] or r["sender_jid"])
+        lp = r["local_path"] if "local_path" in keys else None
+        has_media = bool(lp and not str(lp).startswith("["))
+        ocr_raw = r["ocr_cached"] if "ocr_cached" in keys else ""
+        if ocr_raw and str(ocr_raw).startswith(("[MEDIA_", "[OCR_SKIPPED")):
+            ocr_raw = ""
+        return {
+            "id": r["id"],
+            "chat_jid": r["chat_jid"],
+            "chat_name": r["chat_name"] or r["chat_jid"],
+            "sender": sender,
+            "is_from_me": bool(r["is_from_me"]),
+            "is_group": bool(r["is_group"]),
+            "timestamp": int(r["timestamp"] or 0),
+            "timestamp_str": _format_timestamp(r["timestamp"]),
+            "text": r["text"] or "",
+            "original_text": r["original_text"] if "original_text" in keys else "",
+            "media_type": r["media_type"] or "text",
+            "media_filename": r["media_filename"] or "",
+            "media_mimetype": r["media_mimetype"] or "",
+            "media_size": int(r["media_size"] or 0) if "media_size" in keys else 0,
+            "has_local_media": has_media,
+            "is_deleted": bool(r["is_deleted"]) if "is_deleted" in keys else False,
+            "deleted_at": _format_timestamp(r["deleted_at"]) if ("deleted_at" in keys and r["deleted_at"]) else "",
+            "deleted_by": (r["deleted_by"] or "") if "deleted_by" in keys else "",
+            "is_edited": bool(r["is_edited"]) if "is_edited" in keys else False,
+            "edited_at": _format_timestamp(r["edited_at"]) if ("edited_at" in keys and r["edited_at"]) else "",
+            "ocr_cached": ocr_raw or "",
+        }
+
+    @staticmethod
+    def _build_media_type_clause(media_type: str, alias: str = "m") -> tuple[str, list[Any]]:
+        """Build SQL filter clause and params for Web UI media type filter tabs."""
+        mt = (media_type or "").strip().lower()
+        if not mt or mt == "all":
+            return "", []
+        if mt == "audio":
+            return f"{alias}.media_type IN ('voice_note', 'audio')", []
+        return f"{alias}.media_type = ?", [mt]
+
+    def list_chats(
+        self,
+        search: str = "",
+        include_statuses: bool = False,
+        limit: int = 80,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        """Return synced chats ordered by latest activity with message counts and last preview."""
+        conditions = []
+        params: list[Any] = []
+        if not include_statuses:
+            conditions.append("chat_jid != 'status@broadcast'")
+        if search and search.strip():
+            like_q = f"%{search.strip().lower()}%"
+            conditions.append("(LOWER(COALESCE(chat_name, '')) LIKE ? OR LOWER(chat_jid) LIKE ? OR LOWER(COALESCE(sender_name, '')) LIKE ?)")
+            params.extend([like_q, like_q, like_q])
+        where_sql = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+
+        sql = f"""
+        SELECT chat_jid,
+               MAX(chat_name) AS chat_name,
+               MAX(is_group) AS is_group,
+               COUNT(*) AS msg_count,
+               MAX(timestamp) AS last_ts,
+               MAX(rowid) AS last_rowid
+        FROM messages
+        {where_sql}
+        GROUP BY chat_jid
+        ORDER BY last_ts DESC
+        LIMIT ? OFFSET ?
+        """
+        params.extend([limit, offset])
+
+        with self._get_connection() as conn:
+            groups = conn.execute(sql, tuple(params)).fetchall()
+            if not groups:
+                return []
+
+            jids = [g["chat_jid"] for g in groups]
+            rowids = [g["last_rowid"] for g in groups if g["last_rowid"]]
+            contact_names: dict[str, str] = {}
+            last_msgs: dict[str, sqlite3.Row] = {}
+
+            jid_ph = ",".join("?" for _ in jids)
+            for cr in conn.execute(
+                f"SELECT jid, name, push_name, phone_number FROM contacts WHERE jid IN ({jid_ph})",
+                tuple(jids),
+            ).fetchall():
+                contact_names[cr["jid"]] = cr["name"] or cr["push_name"] or cr["phone_number"] or ""
+
+            if rowids:
+                rid_ph = ",".join("?" for _ in rowids)
+                for lr in conn.execute(
+                    f"SELECT chat_jid, text, media_type, sender_name, is_from_me FROM messages WHERE rowid IN ({rid_ph})",
+                    tuple(rowids),
+                ).fetchall():
+                    last_msgs[lr["chat_jid"]] = lr
+
+            results = []
+            for g in groups:
+                cj = g["chat_jid"]
+                cname = g["chat_name"] or contact_names.get(cj) or cj
+                if cj == "status@broadcast":
+                    cname = "Status Updates"
+                lm = last_msgs.get(cj)
+                preview = ""
+                last_media = "text"
+                if lm:
+                    preview = re.sub(r"\s+", " ", (lm["text"] or "")).strip()[:120]
+                    last_media = lm["media_type"] or "text"
+                results.append({
+                    "chat_jid": cj,
+                    "chat_name": cname,
+                    "is_group": bool(g["is_group"]),
+                    "msg_count": int(g["msg_count"] or 0),
+                    "last_ts": int(g["last_ts"] or 0),
+                    "last_time": _format_timestamp(g["last_ts"]),
+                    "preview": preview,
+                    "last_media_type": last_media,
+                })
+            return results
+
+    def get_chat_messages_paged(
+        self, chat_jid: str, limit: int = 80, before_ts: int = 0
+    ) -> list[dict[str, Any]]:
+        """Fetch chronological messages for a specific chat with optional pagination cursor."""
+        if not chat_jid:
+            return []
+        conditions = ["m.chat_jid = ?"]
+        params: list[Any] = [chat_jid]
+        if before_ts > 0:
+            conditions.append("m.timestamp < ?")
+            params.append(before_ts)
+        where_sql = " AND ".join(conditions)
+        sql = f"""
+        SELECT m.id, m.chat_jid, m.chat_name, m.sender_jid, m.sender_name, m.text, m.original_text,
+               m.timestamp, m.is_from_me, m.is_group, m.media_type, m.media_filename, m.media_mimetype,
+               m.media_size, m.local_path, m.is_deleted, m.deleted_at, m.deleted_by, m.is_edited, m.edited_at,
+               c.ocr_text AS ocr_cached
+        FROM messages m
+        LEFT JOIN media_ocr_cache c ON m.id = c.msg_id
+        WHERE {where_sql}
+        ORDER BY m.timestamp DESC, m.rowid DESC
+        LIMIT ?
+        """
+        params.append(limit)
+        with self._get_connection() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+            return [self._format_web_message_row(r) for r in reversed(rows)]
+
+    def search_messages_web(
+        self,
+        query: str = "",
+        chat_jid: str = "",
+        media_type: str = "",
+        include_statuses: bool = False,
+        limit: int = 60,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        """Rich search endpoint for the Web UI combining FTS5/LIKE text search with chat & media filters."""
+        base_conditions: list[str] = []
+        base_params: list[Any] = []
+        if not include_statuses:
+            base_conditions.append("m.chat_jid != 'status@broadcast'")
+        if chat_jid and chat_jid.strip():
+            resolved = self.resolve_chat_jid(chat_jid.strip())
+            like_c = f"%{chat_jid.strip().lower()}%"
+            if resolved:
+                base_conditions.append(
+                    "(m.chat_jid = ? OR m.sender_jid = ? OR LOWER(COALESCE(m.chat_name, '')) LIKE ? OR LOWER(COALESCE(m.sender_name, '')) LIKE ?)"
+                )
+                base_params.extend([resolved, resolved, like_c, like_c])
+            else:
+                base_conditions.append(
+                    "(LOWER(COALESCE(m.chat_name, '')) LIKE ? OR LOWER(COALESCE(m.sender_name, '')) LIKE ?)"
+                )
+                base_params.extend([like_c, like_c])
+
+        mt_sql, mt_params = self._build_media_type_clause(media_type, alias="m")
+        if mt_sql:
+            base_conditions.append(mt_sql)
+            base_params.extend(mt_params)
+
+        cols_sql = """
+        SELECT m.id, m.chat_jid, m.chat_name, m.sender_jid, m.sender_name, m.text, m.original_text,
+               m.timestamp, m.is_from_me, m.is_group, m.media_type, m.media_filename, m.media_mimetype,
+               m.media_size, m.local_path, m.is_deleted, m.deleted_at, m.deleted_by, m.is_edited, m.edited_at,
+               c.ocr_text AS ocr_cached
+        """
+        q_clean = (query or "").strip()
+
+        if q_clean:
+            try:
+                with self._get_connection() as conn:
+                    safe_fts = q_clean.replace('"', '""')
+                    fts_conds = ["messages_fts MATCH ?", *base_conditions]
+                    fts_params: list[Any] = [f'"{safe_fts}"', *base_params, limit, offset]
+                    sql = f"""
+                    {cols_sql}
+                    FROM messages_fts f
+                    JOIN messages m ON f.rowid = m.rowid
+                    LEFT JOIN media_ocr_cache c ON m.id = c.msg_id
+                    WHERE {' AND '.join(fts_conds)}
+                    ORDER BY m.timestamp DESC
+                    LIMIT ? OFFSET ?
+                    """
+                    rows = conn.execute(sql, tuple(fts_params)).fetchall()
+                    if rows:
+                        return [self._format_web_message_row(r) for r in rows]
+            except Exception as e:
+                logger.debug("Web FTS search fell back to LIKE (%s)", e)
+
+            like_q = f"%{q_clean.lower()}%"
+            like_conds = [
+                "(LOWER(COALESCE(m.text, '')) LIKE ? OR LOWER(COALESCE(m.media_filename, '')) LIKE ? OR LOWER(COALESCE(m.original_text, '')) LIKE ? OR LOWER(COALESCE(c.ocr_text, '')) LIKE ?)",
+                *base_conditions,
+            ]
+            like_params: list[Any] = [like_q, like_q, like_q, like_q, *base_params, limit, offset]
+            sql = f"""
+            {cols_sql}
+            FROM messages m
+            LEFT JOIN media_ocr_cache c ON m.id = c.msg_id
+            WHERE {' AND '.join(like_conds)}
+            ORDER BY m.timestamp DESC
+            LIMIT ? OFFSET ?
+            """
+            with self._get_connection() as conn:
+                rows = conn.execute(sql, tuple(like_params)).fetchall()
+                return [self._format_web_message_row(r) for r in rows]
+
+        where_sql = f"WHERE {' AND '.join(base_conditions)}" if base_conditions else ""
+        sql = f"""
+        {cols_sql}
+        FROM messages m
+        LEFT JOIN media_ocr_cache c ON m.id = c.msg_id
+        {where_sql}
+        ORDER BY m.timestamp DESC
+        LIMIT ? OFFSET ?
+        """
+        with self._get_connection() as conn:
+            rows = conn.execute(sql, tuple([*base_params, limit, offset])).fetchall()
+            return [self._format_web_message_row(r) for r in rows]
+
+    def list_stored_media(
+        self,
+        media_filter: str = "all",
+        query: str = "",
+        include_statuses: bool = True,
+        limit: int = 60,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        """List media files stored locally on disk for the Web UI gallery & document explorer."""
+        conditions = ["m.local_path IS NOT NULL", "m.local_path NOT LIKE '[%'"]
+        params: list[Any] = []
+        mf = (media_filter or "all").strip().lower()
+        if mf == "status":
+            conditions.append("m.chat_jid = 'status@broadcast'")
+        else:
+            if not include_statuses:
+                conditions.append("m.chat_jid != 'status@broadcast'")
+            mt_sql, mt_params = self._build_media_type_clause(mf, alias="m")
+            if mt_sql:
+                conditions.append(mt_sql)
+                params.extend(mt_params)
+
+        if query and query.strip():
+            like_q = f"%{query.strip().lower()}%"
+            conditions.append(
+                "(LOWER(COALESCE(m.media_filename, '')) LIKE ? OR LOWER(COALESCE(m.text, '')) LIKE ? OR LOWER(COALESCE(m.chat_name, '')) LIKE ? OR LOWER(COALESCE(c.ocr_text, '')) LIKE ?)"
+            )
+            params.extend([like_q, like_q, like_q, like_q])
+
+        sql = f"""
+        SELECT m.id, m.chat_jid, m.chat_name, m.sender_jid, m.sender_name, m.text, m.original_text,
+               m.timestamp, m.is_from_me, m.is_group, m.media_type, m.media_filename, m.media_mimetype,
+               m.media_size, m.local_path, m.is_deleted, m.deleted_at, m.deleted_by, m.is_edited, m.edited_at,
+               c.ocr_text AS ocr_cached
+        FROM messages m
+        LEFT JOIN media_ocr_cache c ON m.id = c.msg_id
+        WHERE {' AND '.join(conditions)}
+        ORDER BY m.timestamp DESC
+        LIMIT ? OFFSET ?
+        """
+        params.extend([limit, offset])
+        with self._get_connection() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+            return [self._format_web_message_row(r) for r in rows]
+
+    def get_message_media_info(self, msg_id: str) -> dict[str, Any] | None:
+        """Retrieve local file path and metadata for serving a stored media attachment safely by msg_id."""
+        if not msg_id:
+            return None
+        with self._get_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT m.id, m.local_path, m.media_filename, m.media_mimetype, m.media_type,
+                       m.text, c.ocr_text AS ocr_cached
+                FROM messages m
+                LEFT JOIN media_ocr_cache c ON m.id = c.msg_id
+                WHERE m.id = ?
+                """,
+                (msg_id,),
+            ).fetchone()
+            return dict(row) if row else None

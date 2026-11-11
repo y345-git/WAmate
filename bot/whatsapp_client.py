@@ -798,6 +798,10 @@ class WhatsAppBot:
             sync_state = "Fully indexed & Real-time active ✅" if getattr(self, "history_sync_completed", False) else "Indexed (Real-time active) ✅"
             local_ocr_state = Config.describe_local_ocr(stats.get("total_local_ocr", 0))
             local_doc_state = Config.describe_local_doc_index(stats.get("total_local_docs", 0))
+            web_ui_obj = getattr(self, "web_ui", None)
+            web_ui_state = Config.describe_web_ui(
+                running=web_ui_obj.is_running if web_ui_obj is not None else True
+            )
 
             # Compute disk usage of stored media files
             stored_mb = 0.0
@@ -828,6 +832,7 @@ class WhatsAppBot:
                 f"• *Local CPU OCR:* {local_ocr_state}\n"
                 f"• *Local Doc Index:* {local_doc_state}\n"
                 f"• *Anti-Delete Vault:* Active 🛡️ ({stats.get('total_deleted', 0)} deleted, {stats.get('total_edited', 0)} edited)\n"
+                f"• *Web Search UI:* {web_ui_state}\n"
                 f"• *Database Size:* {stats['db_size_mb']} MB\n"
                 f"• *Sync Status:* {sync_state}\n"
                 f"• *AI Model:* `{Config.GEMINI_MODEL}` ({key_count} API key{'s' if key_count != 1 else ''})\n\n"

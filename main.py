@@ -2,11 +2,25 @@ import sys
 import logging
 import signal
 import argparse
+import threading
 from pathlib import Path
 from bot.config import Config
 from bot.database import DatabaseManager
 from bot.gemini_agent import GeminiAgent
+from bot.web_ui import WebUIServer
 from bot.whatsapp_client import WhatsAppBot
+
+
+def _create_gemini_agent(db: DatabaseManager) -> GeminiAgent:
+    """Instantiate the configured Gemini agent for WhatsApp and Web UI queries."""
+    return GeminiAgent(
+        api_key=Config.GEMINI_API_KEYS,
+        model_name=Config.GEMINI_MODEL,
+        db=db,
+        timezone_name=Config.TZ,
+        memory_turns=Config.CONVERSATION_MEMORY_TURNS,
+        memory_ttl_minutes=Config.CONVERSATION_MEMORY_TTL_MINUTES,
+    )
 
 
 class WhatsmeowNoiseFilter(logging.Filter):
@@ -147,6 +161,11 @@ def main():
         action="store_true",
         help="Remove redundant raw message BLOBs and VACUUM database to reclaim disk space",
     )
+    parser.add_argument(
+        "--web-only",
+        action="store_true",
+        help="Launch only the local Web Search & Media Browser UI without connecting WhatsApp",
+    )
     args = parser.parse_args()
 
     if args.prune_db:
@@ -189,6 +208,7 @@ def main():
         print(f" • Local CPU OCR:        {Config.describe_local_ocr(stats.get('total_local_ocr', 0), concise=True)}")
         print(f" • Local Doc Index:      {Config.describe_local_doc_index(stats.get('total_local_docs', 0), concise=True)}")
         print(f" • Anti-Delete Vault:    Active 🛡️ ({stats.get('total_deleted', 0)} deleted, {stats.get('total_edited', 0)} edited preserved)")
+        print(f" • Web Search UI:        {Config.describe_web_ui(concise=True)}")
         print(f" • Database File Size:   {stats['db_size_mb']} MB (raw BLOB cache: {stats.get('raw_blob_mb', 0.0)} MB)")
         print(f" • Gemini API Keys:      {len(Config.GEMINI_API_KEYS)} configured")
         print("=" * 60 + "\n")
@@ -234,6 +254,51 @@ def main():
     ================================================================
     """)
 
+    if args.web_only:
+        Config.ensure_data_dir()
+        logger.info("Starting WAmate in --web-only mode (WhatsApp connection disabled).")
+        logger.info("Initializing SQLite database at: %s", Config.MESSAGES_DB_PATH)
+        db = DatabaseManager(Config.MESSAGES_DB_PATH)
+        gemini = None
+        if Config.GEMINI_API_KEYS:
+            logger.info(
+                "Initializing Gemini Agent (model: %s, keys: %d)...",
+                Config.GEMINI_MODEL,
+                len(Config.GEMINI_API_KEYS),
+            )
+            gemini = _create_gemini_agent(db)
+        else:
+            logger.warning("GEMINI_API_KEYS not set; Ask AI tab disabled in --web-only mode.")
+
+        web_ui = WebUIServer(
+            db=db,
+            host=Config.WEB_UI_HOST,
+            port=Config.WEB_UI_PORT,
+            password=Config.WEB_UI_PASSWORD,
+            gemini=gemini,
+            downloads_dir=Config.DOWNLOADS_DIR,
+        )
+        if not web_ui.start():
+            logger.error("Failed to start Web UI on http://%s:%d", Config.WEB_UI_HOST, Config.WEB_UI_PORT)
+            db.close_all()
+            sys.exit(1)
+
+        stop_event = threading.Event()
+
+        def _stop_web_only(signum, frame):
+            logger.info("Received termination signal, stopping Web UI...")
+            stop_event.set()
+
+        signal.signal(signal.SIGINT, _stop_web_only)
+        signal.signal(signal.SIGTERM, _stop_web_only)
+        try:
+            while not stop_event.wait(timeout=1.0):
+                pass
+        finally:
+            web_ui.stop()
+            db.close_all()
+        sys.exit(0)
+
     try:
         Config.validate()
     except ValueError as e:
@@ -251,14 +316,7 @@ def main():
         Config.GEMINI_MODEL,
         len(Config.GEMINI_API_KEYS),
     )
-    gemini = GeminiAgent(
-        api_key=Config.GEMINI_API_KEYS,
-        model_name=Config.GEMINI_MODEL,
-        db=db,
-        timezone_name=Config.TZ,
-        memory_turns=Config.CONVERSATION_MEMORY_TURNS,
-        memory_ttl_minutes=Config.CONVERSATION_MEMORY_TTL_MINUTES,
-    )
+    gemini = _create_gemini_agent(db)
 
     logger.info("Initializing WhatsApp Bot...")
     bot = WhatsAppBot(
@@ -268,6 +326,20 @@ def main():
         command_prefix=Config.COMMAND_PREFIX,
         phone_number=Config.PHONE_NUMBER,
     )
+
+    web_ui: WebUIServer | None = None
+    if Config.ENABLE_WEB_UI:
+        web_ui = WebUIServer(
+            db=db,
+            host=Config.WEB_UI_HOST,
+            port=Config.WEB_UI_PORT,
+            password=Config.WEB_UI_PASSWORD,
+            gemini=gemini,
+            bot_client=bot,
+            downloads_dir=Config.DOWNLOADS_DIR,
+        )
+        web_ui.start()
+        bot.web_ui = web_ui
 
     def shutdown(signum, frame):
         logger.info("Received termination signal, shutting down gracefully...")
@@ -281,6 +353,8 @@ def main():
                 _nlog.dblogger.setLevel(logging.CRITICAL)
         except Exception:
             pass
+        if web_ui is not None:
+            web_ui.stop()
         try:
             bot.stop()
         except Exception:
@@ -300,6 +374,10 @@ def main():
     except Exception as e:
         logger.exception("Fatal error running WhatsApp Bot: %s", e)
         sys.exit(1)
+    finally:
+        if web_ui is not None:
+            web_ui.stop()
+        db.close_all()
 
 
 if __name__ == "__main__":
