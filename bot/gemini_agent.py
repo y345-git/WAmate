@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 from google import genai
 from google.genai import types
 
-from .database import DatabaseManager
+from .database import DatabaseManager, parse_date_to_timestamp
 from .utils import format_for_whatsapp
 
 logger = logging.getLogger(__name__)
@@ -58,7 +58,7 @@ Your primary purpose:
      - When the user asks what someone said in a voice note, audio message, or voice recording (or swipe-replies to one): CALL `transcribe_voice_note`!
      - `transcribe_voice_note` transcribes the spoken audio (handling English, Hindi, Hinglish, or regional languages cleanly) and caches the transcript permanently for instant future searches.
    - *Voice Notes, Audio & Media Metadata*: Search for voice messages, durations, audio clips, image captions, and videos using `find_voice_notes_and_media`.
-   - *General Message / Topic Search*: Use `search_messages_by_keyword` or `search_chat_history`.
+   - *General Message / Date-Range Search*: Use `search_messages_by_keyword` (searches message text, filenames, AND cached OCR receipts/documents/voice transcripts with flexible multi-word matching) or `search_chat_history`. Pass `start_date` / `end_date` (`YYYY-MM-DD`) whenever the user asks about a specific date, week, or month.
 
 3. STRICT WHATSAPP FORMATTING RULES (MANDATORY):
    WhatsApp has very specific text styling rules and DOES NOT support standard Markdown headers, tables, or markdown links:
@@ -318,41 +318,73 @@ class GeminiAgent:
     def _build_tools(self) -> list[Any]:
         """Build callable Python tool functions for Gemini."""
 
-        def search_chat_history(contact_or_chat_name: str, limit: int = 50) -> list[dict[str, Any]]:
+        def _date_bounds(start_date: str = "", end_date: str = "") -> tuple[int, int]:
+            return (
+                parse_date_to_timestamp(start_date, end_of_day=False, tz_name=self.timezone_name),
+                parse_date_to_timestamp(end_date, end_of_day=True, tz_name=self.timezone_name),
+            )
+
+        def search_chat_history(
+            contact_or_chat_name: str,
+            limit: int = 50,
+            start_date: str = "",
+            end_date: str = "",
+        ) -> list[dict[str, Any]]:
             """Fetch recent messages and media from a specific person or group chat in chronological order.
             Use this when the user asks about conversations with a specific contact (e.g. 'Pranav', 'Alice', 'Work Group').
 
             Args:
                 contact_or_chat_name: Name, phone number, or JID of the contact or group chat.
                 limit: Maximum number of recent messages to fetch (default: 50, up to 100).
+                start_date: Optional inclusive start date in YYYY-MM-DD format (e.g. '2026-11-01').
+                end_date: Optional inclusive end date in YYYY-MM-DD format (e.g. '2026-11-12').
             """
-            return self.db.get_chat_history(contact_or_chat_name, limit=limit)
+            df, dt = _date_bounds(start_date, end_date)
+            return self.db.get_chat_history(contact_or_chat_name, limit=limit, date_from=df, date_to=dt)
 
-        def search_messages_by_keyword(query: str, contact_or_chat: str = "", limit: int = 25) -> list[dict[str, Any]]:
-            """Search across WhatsApp messages, captions, and content for specific keywords, phrases, topics, or links.
+        def search_messages_by_keyword(
+            query: str = "",
+            contact_or_chat: str = "",
+            limit: int = 25,
+            start_date: str = "",
+            end_date: str = "",
+        ) -> list[dict[str, Any]]:
+            """Search across WhatsApp messages, filenames, preserved originals, AND cached OCR/PDF/voice transcripts.
+            Supports flexible multi-word matching and optional date bounds.
 
             Args:
-                query: Search keyword or phrase (e.g. 'meeting', 'zoom link', 'address', 'invoice', 'flight').
-                contact_or_chat: Optional contact or chat name to restrict the search.
+                query: Search keywords (e.g. 'electricity bill oct', 'zoom link', 'invoice', 'UPI 2799'). Can be empty when filtering by date/chat.
+                contact_or_chat: Optional contact name, phone number, or chat name to restrict the search.
                 limit: Maximum number of results to return (default: 25).
+                start_date: Optional inclusive start date in YYYY-MM-DD format (e.g. '2026-11-01').
+                end_date: Optional inclusive end date in YYYY-MM-DD format (e.g. '2026-11-12').
             """
-            chat_jid = None
-            if contact_or_chat:
-                contacts = self.db.find_contacts(contact_or_chat, limit=1)
-                if contacts:
-                    chat_jid = contacts[0]["jid"]
-            return self.db.search_messages(query, chat_jid=chat_jid, limit=limit)
+            df, dt = _date_bounds(start_date, end_date)
+            return self.db.search_messages(
+                query, chat_jid=contact_or_chat or None, limit=limit, date_from=df, date_to=dt
+            )
 
-        def find_documents(query: str = "", contact_or_chat: str = "", limit: int = 15) -> list[dict[str, Any]]:
-            """Search specifically for document attachments (PDFs, spreadsheets, DOCX, presentations, invoices) by filename or keyword.
+        def find_documents(
+            query: str = "",
+            contact_or_chat: str = "",
+            limit: int = 15,
+            start_date: str = "",
+            end_date: str = "",
+        ) -> list[dict[str, Any]]:
+            """Search specifically for document attachments (PDFs, spreadsheets, DOCX, presentations, invoices) by filename, caption, or indexed text.
             Use this when the user asks to find a file, PDF, report, syllabus, ticket, or document.
 
             Args:
                 query: Optional search keyword or filename part (e.g. 'resume', 'invoice', 'report', 'spec', 'pdf').
                 contact_or_chat: Optional contact or chat name to filter by.
                 limit: Maximum number of documents to return (default: 15).
+                start_date: Optional inclusive start date in YYYY-MM-DD format.
+                end_date: Optional inclusive end date in YYYY-MM-DD format.
             """
-            return self.db.find_documents(query=query, chat_name_or_jid=contact_or_chat, limit=limit)
+            df, dt = _date_bounds(start_date, end_date)
+            return self.db.find_documents(
+                query=query, chat_name_or_jid=contact_or_chat, limit=limit, date_from=df, date_to=dt
+            )
 
         def send_document_to_chat(document_query_or_name: str = "", message_id: str = "") -> str:
             """Locate and send the actual document file (PDF, DOCX, ZIP, etc.) directly into this WhatsApp self-chat.
@@ -463,18 +495,34 @@ class GeminiAgent:
             )
 
         def find_voice_notes_and_media(
-            media_type: str = "voice_note", query: str = "", contact_or_chat: str = "", limit: int = 15
+            media_type: str = "voice_note",
+            query: str = "",
+            contact_or_chat: str = "",
+            limit: int = 15,
+            start_date: str = "",
+            end_date: str = "",
+            include_statuses: bool = False,
         ) -> list[dict[str, Any]]:
             """Find voice notes, audio files, images, or videos sent in conversations.
 
             Args:
                 media_type: Type of media to find ('voice_note', 'audio', 'image', 'video', 'location'). Default is 'voice_note'.
-                query: Optional keyword or caption search.
+                query: Optional keyword or caption/transcript filter.
                 contact_or_chat: Optional contact or chat name to filter by.
                 limit: Maximum number of items to return (default: 15).
+                start_date: Optional inclusive start date in YYYY-MM-DD format.
+                end_date: Optional inclusive end date in YYYY-MM-DD format.
+                include_statuses: Include WhatsApp status@broadcast media (default: False).
             """
+            df, dt = _date_bounds(start_date, end_date)
             return self.db.find_voice_notes_and_media(
-                media_type=media_type, query=query, chat_name_or_jid=contact_or_chat, limit=limit
+                media_type=media_type,
+                query=query,
+                chat_name_or_jid=contact_or_chat,
+                limit=limit,
+                date_from=df,
+                date_to=dt,
+                include_statuses=include_statuses,
             )
 
         def find_contacts(query: str) -> list[dict[str, Any]]:
@@ -496,7 +544,12 @@ class GeminiAgent:
             return self.db.get_recent_activity(hours=hours, limit=limit)
 
         def get_deleted_and_edited_messages(
-            mode: str = "all", contact_or_chat: str = "", limit: int = 20
+            mode: str = "all",
+            contact_or_chat: str = "",
+            limit: int = 20,
+            start_date: str = "",
+            end_date: str = "",
+            include_statuses: bool = False,
         ) -> list[dict[str, Any]]:
             """Retrieve preserved original text, media info, and edit history for messages that were deleted for everyone or edited.
             Use this whenever the user asks about deleted messages, retracted photos/texts, or original versions of edited messages.
@@ -505,9 +558,18 @@ class GeminiAgent:
                 mode: Filter type — 'deleted', 'edited', or 'all' (default: 'all').
                 contact_or_chat: Optional contact name, sender, or group chat filter.
                 limit: Maximum number of records to return (default: 20).
+                start_date: Optional inclusive start date in YYYY-MM-DD format.
+                end_date: Optional inclusive end date in YYYY-MM-DD format.
+                include_statuses: Include deleted/edited WhatsApp Status broadcasts (default: False).
             """
+            df, dt = _date_bounds(start_date, end_date)
             return self.db.find_deleted_or_edited_messages(
-                mode=mode, chat_name_or_jid=contact_or_chat, limit=limit
+                mode=mode,
+                chat_name_or_jid=contact_or_chat,
+                limit=limit,
+                date_from=df,
+                date_to=dt,
+                include_statuses=include_statuses,
             )
 
         return [

@@ -716,7 +716,10 @@ class WhatsAppBot:
             trig, mode = matched_vault
             filter_query = text[len(trig):].strip()
             items = self.db.find_deleted_or_edited_messages(
-                mode=mode, chat_name_or_jid=filter_query, limit=15
+                mode=mode,
+                chat_name_or_jid=filter_query,
+                limit=15,
+                include_statuses=("status" in filter_query.lower()),
             )
             if not items:
                 scope_note = f" matching _{filter_query}_" if filter_query else ""

@@ -4,14 +4,74 @@ import logging
 import re
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
 
 NON_ATTACHMENT_MEDIA_TYPES = ("text", "contact", "poll", "location", "link")
 DOWNLOADABLE_MEDIA_TYPES = ("image", "video", "document", "audio", "voice_note", "sticker")
+_SEARCH_STOP_WORDS = frozenset({
+    "the", "a", "an", "and", "or", "is", "are", "was", "were", "to", "for",
+    "of", "in", "on", "at", "from", "by", "with", "about", "what", "who",
+    "did", "do", "does", "my", "me", "please",
+})
+
+
+def parse_date_to_timestamp(
+    val: str | int | None, end_of_day: bool = False, tz_name: str = ""
+) -> int:
+    """Parse YYYY-MM-DD, ISO timestamp, 'today'/'yesterday', or unix epoch into Unix seconds (0 if empty/invalid)."""
+    if val is None:
+        return 0
+    if isinstance(val, (int, float)) and not isinstance(val, bool):
+        ts = int(val)
+        return ts // 1000 if ts > 10_000_000_000 else max(0, ts)
+
+    raw = str(val).strip()
+    if not raw:
+        return 0
+    if raw.isdigit():
+        ts = int(raw)
+        return ts // 1000 if ts > 10_000_000_000 else max(0, ts)
+
+    tz = None
+    if tz_name:
+        try:
+            tz = ZoneInfo(tz_name)
+        except Exception:
+            tz = None
+    if tz is None:
+        tz = datetime.now().astimezone().tzinfo
+
+    low = raw.lower()
+    if low in ("today", "yesterday"):
+        now_dt = datetime.now(tz)
+        if low == "yesterday":
+            now_dt = now_dt - timedelta(days=1)
+        base = now_dt.replace(hour=23 if end_of_day else 0, minute=59 if end_of_day else 0, second=59 if end_of_day else 0, microsecond=0)
+        return max(0, int(base.timestamp()))
+
+    # Support full ISO datetimes with time component if explicitly provided
+    norm = raw.replace("Z", "+00:00")
+    if len(norm) > 10 and ("T" in norm or " " in norm):
+        try:
+            dt = datetime.fromisoformat(norm)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=tz)
+            return max(0, int(dt.timestamp()))
+        except ValueError:
+            pass
+
+    try:
+        dt = datetime.strptime(raw[:10], "%Y-%m-%d").replace(tzinfo=tz)
+        if end_of_day:
+            dt = dt + timedelta(hours=23, minutes=59, seconds=59)
+        return max(0, int(dt.timestamp()))
+    except ValueError:
+        return 0
 
 
 def _format_timestamp(ts: int | None) -> str:
@@ -1424,21 +1484,80 @@ class DatabaseManager:
 
             return None
 
-    def get_chat_history(self, chat_jid_or_name: str, limit: int = 50) -> list[dict[str, Any]]:
+    @staticmethod
+    def _tokenize_search_terms(query: str) -> list[str]:
+        """Extract clean word/number tokens for FTS5 and multi-keyword matching."""
+        return [t for t in re.findall(r"[^\W_]+", (query or "").strip(), flags=re.UNICODE) if t]
+
+    @classmethod
+    def _build_fts_match_expressions(cls, query: str) -> list[str]:
+        """Build ordered FTS5 MATCH expressions (strict tokenized AND -> stopword-relaxed AND)."""
+        tokens = cls._tokenize_search_terms(query)
+        if not tokens:
+            return []
+
+        def _fmt_tok(tok: str) -> str:
+            escaped = tok.replace('"', '""')
+            return f'"{escaped}"*' if len(tok) >= 2 else f'"{escaped}"'
+
+        exprs: list[str] = [" AND ".join(_fmt_tok(t) for t in tokens)]
+        filtered = [t for t in tokens if t.lower() not in _SEARCH_STOP_WORDS]
+        if filtered and len(filtered) < len(tokens):
+            relaxed = " AND ".join(_fmt_tok(t) for t in filtered)
+            if relaxed not in exprs:
+                exprs.append(relaxed)
+        return exprs
+
+    @staticmethod
+    def _format_search_hit(r: sqlite3.Row) -> dict[str, Any]:
+        """Format a message (+ optional OCR cache excerpt) for Gemini agent tools."""
+        keys = set(r.keys())
+        sender = "You" if r["is_from_me"] else (r["sender_name"] or r["sender_jid"])
+        hit: dict[str, Any] = {
+            "id": r["id"],
+            "chat": r["chat_name"] or r["chat_jid"],
+            "chat_jid": r["chat_jid"],
+            "sender": sender,
+            "timestamp": _format_timestamp(r["timestamp"]),
+            "text": r["text"],
+            "media_type": r["media_type"],
+            "filename": r["media_filename"],
+        }
+        if "ocr_cached" in keys and r["ocr_cached"]:
+            ocr_txt = str(r["ocr_cached"])
+            if not ocr_txt.startswith(("[MEDIA_", "[OCR_SKIPPED")):
+                hit["ocr_excerpt"] = ocr_txt[:500].rstrip() + ("..." if len(ocr_txt) > 500 else "")
+        return hit
+
+    def get_chat_history(
+        self,
+        chat_jid_or_name: str,
+        limit: int = 50,
+        date_from: int = 0,
+        date_to: int = 0,
+    ) -> list[dict[str, Any]]:
         """Get recent message history with a specific contact or group in chronological order."""
         target_jid = self.resolve_chat_jid(chat_jid_or_name) or chat_jid_or_name.strip()
         like_name = f"%{chat_jid_or_name.strip().lower()}%"
+        conditions = ["(chat_jid = ? OR (is_group = 0 AND (LOWER(chat_name) LIKE ? OR LOWER(sender_name) LIKE ?)))"]
+        if target_jid != "status@broadcast" and "status" not in chat_jid_or_name.strip().lower():
+            conditions.append("chat_jid != 'status@broadcast'")
+        params: list[Any] = [target_jid, like_name, like_name]
+        dt_conds, dt_params = self._build_date_range_conditions(date_from, date_to, ts_expr="timestamp")
+        conditions.extend(dt_conds)
+        params.extend(dt_params)
+        params.append(limit)
 
-        sql = """
+        sql = f"""
         SELECT id, chat_jid, chat_name, sender_jid, sender_name, text, timestamp, is_from_me, is_group,
                media_type, media_filename, media_mimetype, media_size, media_metadata
         FROM messages
-        WHERE chat_jid = ? OR (is_group = 0 AND (LOWER(chat_name) LIKE ? OR LOWER(sender_name) LIKE ?))
+        WHERE {' AND '.join(conditions)}
         ORDER BY timestamp DESC
         LIMIT ?
         """
         with self._get_connection() as conn:
-            rows = conn.execute(sql, (target_jid, like_name, like_name, limit)).fetchall()
+            rows = conn.execute(sql, tuple(params)).fetchall()
             results = []
             # Reverse to return in chronological order (oldest to newest)
             for r in reversed(rows):
@@ -1460,110 +1579,161 @@ class DatabaseManager:
                 )
             return results
 
-    def search_messages(self, query: str, chat_jid: str | None = None, limit: int = 25) -> list[dict[str, Any]]:
-        """Perform full-text search across messages, captions, filenames, and rich media content."""
-        results: list[dict[str, Any]] = []
+    def search_messages(
+        self,
+        query: str = "",
+        chat_jid: str | None = None,
+        limit: int = 25,
+        date_from: int = 0,
+        date_to: int = 0,
+        include_statuses: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Search across messages, filenames, preserved originals, and cached OCR/transcripts."""
+        q_clean = (query or "").strip()
+        cand_limit = max(limit * 2, 40)
 
-        resolved_jid = self.resolve_chat_jid(chat_jid) if chat_jid else None
-        like_filter = f"%{chat_jid.strip().lower()}%" if chat_jid else None
-
-        # Try FTS5 first
-        try:
-            with self._get_connection() as conn:
-                safe_fts_query = query.replace('"', '""')
-                if chat_jid:
-                    sql = """
-                    SELECT m.id, m.chat_jid, m.chat_name, m.sender_jid, m.sender_name, m.text, m.timestamp,
-                           m.is_from_me, m.media_type, m.media_filename, m.media_mimetype
-                    FROM messages_fts f
-                    JOIN messages m ON f.rowid = m.rowid
-                    WHERE messages_fts MATCH ?
-                      AND m.chat_jid != 'status@broadcast'
-                      AND (m.chat_jid = ? OR m.sender_jid = ? OR LOWER(m.chat_name) LIKE ? OR LOWER(m.sender_name) LIKE ?)
-                    ORDER BY m.timestamp DESC
-                    LIMIT ?
-                    """
-                    rows = conn.execute(sql, (f'"{safe_fts_query}"', resolved_jid, resolved_jid, like_filter, like_filter, limit)).fetchall()
-                else:
-                    sql = """
-                    SELECT m.id, m.chat_jid, m.chat_name, m.sender_jid, m.sender_name, m.text, m.timestamp,
-                           m.is_from_me, m.media_type, m.media_filename, m.media_mimetype
-                    FROM messages_fts f
-                    JOIN messages m ON f.rowid = m.rowid
-                    WHERE messages_fts MATCH ?
-                      AND m.chat_jid != 'status@broadcast'
-                    ORDER BY m.timestamp DESC
-                    LIMIT ?
-                    """
-                    rows = conn.execute(sql, (f'"{safe_fts_query}"', limit)).fetchall()
-
-                for r in rows:
-                    time_str = _format_timestamp(r["timestamp"])
-                    sender = "You" if r["is_from_me"] else (r["sender_name"] or r["sender_jid"])
-                    results.append(
-                        {
-                            "id": r["id"],
-                            "chat": r["chat_name"] or r["chat_jid"],
-                            "chat_jid": r["chat_jid"],
-                            "sender": sender,
-                            "timestamp": time_str,
-                            "text": r["text"],
-                            "media_type": r["media_type"],
-                            "filename": r["media_filename"],
-                        }
-                    )
-                if results:
-                    return results
-        except Exception as e:
-            logger.warning("FTS search encountered error '%s', falling back to standard LIKE search", e)
-
-        # Fallback to standard LIKE if FTS fails or yields no matches
-        like_query = f"%{query.strip().lower()}%"
         with self._get_connection() as conn:
-            if chat_jid:
-                sql = """
-                SELECT id, chat_jid, chat_name, sender_jid, sender_name, text, timestamp,
-                       is_from_me, media_type, media_filename, media_mimetype
-                FROM messages
-                WHERE chat_jid != 'status@broadcast'
-                  AND (LOWER(text) LIKE ? OR LOWER(media_filename) LIKE ?)
-                  AND (chat_jid = ? OR sender_jid = ? OR LOWER(chat_name) LIKE ? OR LOWER(sender_name) LIKE ?)
-                ORDER BY timestamp DESC
+            base_conds: list[str] = []
+            if not include_statuses:
+                base_conds.append("m.chat_jid != 'status@broadcast'")
+            chat_conds, base_params = self._build_chat_filter_conditions(
+                conn, chat_filter=chat_jid or "", chat_scope="all", alias="m", include_sender=True
+            )
+            base_conds.extend(chat_conds)
+            dt_conds, dt_params = self._build_date_range_conditions(date_from, date_to, ts_expr="m.timestamp")
+            base_conds.extend(dt_conds)
+            base_params.extend(dt_params)
+
+            if not q_clean:
+                where_sql = f"WHERE {' AND '.join(base_conds)}" if base_conds else ""
+                sql = f"""
+                SELECT m.id, m.chat_jid, m.chat_name, m.sender_jid, m.sender_name, m.text, m.timestamp,
+                       m.is_from_me, m.media_type, m.media_filename, m.media_mimetype,
+                       c.ocr_text AS ocr_cached
+                FROM messages m
+                LEFT JOIN media_ocr_cache c ON m.id = c.msg_id
+                {where_sql}
+                ORDER BY m.timestamp DESC
                 LIMIT ?
                 """
-                rows = conn.execute(sql, (like_query, like_query, resolved_jid, resolved_jid, like_filter, like_filter, limit)).fetchall()
+                rows = conn.execute(sql, tuple([*base_params, limit])).fetchall()
+                return [self._format_search_hit(r) for r in rows]
+
+            hits_by_id: dict[str, tuple[tuple[int, float, int], sqlite3.Row]] = {}
+            q_low = q_clean.lower()
+            phrase_like = f"%{q_low}%"
+
+            # 1. Tokenized FTS5 search with BM25 relevance + exact phrase boost
+            for match_expr in self._build_fts_match_expressions(q_clean):
+                try:
+                    fts_conds = ["messages_fts MATCH ?", *base_conds]
+                    sql = f"""
+                    SELECT m.id, m.chat_jid, m.chat_name, m.sender_jid, m.sender_name, m.text, m.timestamp,
+                           m.is_from_me, m.media_type, m.media_filename, m.media_mimetype,
+                           c.ocr_text AS ocr_cached, f.rank AS fts_rank
+                    FROM messages_fts f
+                    JOIN messages m ON f.rowid = m.rowid
+                    LEFT JOIN media_ocr_cache c ON m.id = c.msg_id
+                    WHERE {' AND '.join(fts_conds)}
+                    ORDER BY (CASE WHEN LOWER(COALESCE(m.text, '')) LIKE ? OR LOWER(COALESCE(m.media_filename, '')) LIKE ? THEN 0 ELSE 1 END),
+                             f.rank ASC,
+                             m.timestamp DESC
+                    LIMIT ?
+                    """
+                    fts_rows = conn.execute(
+                        sql, tuple([match_expr, *base_params, phrase_like, phrase_like, cand_limit])
+                    ).fetchall()
+                    if fts_rows:
+                        for r in fts_rows:
+                            hay = f"{r['text'] or ''} {r['media_filename'] or ''}".lower()
+                            phrase_miss = 0 if q_low in hay else 1
+                            score = (phrase_miss, float(r["fts_rank"] or 0.0), -int(r["timestamp"] or 0))
+                            hits_by_id[r["id"]] = (score, r)
+                        break
+                except Exception as e:
+                    logger.warning("FTS search encountered error '%s', falling back to standard LIKE search", e)
+
+            # 2. Cached OCR / document text / voice transcript search (media_ocr_cache)
+            raw_tokens = [t.lower() for t in self._tokenize_search_terms(q_clean)]
+            ocr_tokens = [t for t in raw_tokens if t not in _SEARCH_STOP_WORDS] or raw_tokens
+            ocr_conds = [
+                "c.ocr_text NOT LIKE '[MEDIA_%'",
+                "c.ocr_text NOT LIKE '[OCR_SKIPPED%'",
+                *base_conds,
+            ]
+            ocr_params: list[Any] = []
+            if ocr_tokens:
+                for tok in ocr_tokens:
+                    ocr_conds.append(
+                        "(LOWER(c.ocr_text) LIKE ? OR LOWER(COALESCE(m.text, '')) LIKE ? OR LOWER(COALESCE(m.media_filename, '')) LIKE ?)"
+                    )
+                    tp = f"%{tok}%"
+                    ocr_params.extend([tp, tp, tp])
             else:
-                sql = """
-                SELECT id, chat_jid, chat_name, sender_jid, sender_name, text, timestamp,
-                       is_from_me, media_type, media_filename, media_mimetype
-                FROM messages
-                WHERE chat_jid != 'status@broadcast'
-                  AND (LOWER(text) LIKE ? OR LOWER(media_filename) LIKE ?)
-                ORDER BY timestamp DESC
-                LIMIT ?
-                """
-                rows = conn.execute(sql, (like_query, like_query, limit)).fetchall()
+                ocr_conds.append("LOWER(c.ocr_text) LIKE ?")
+                ocr_params.append(phrase_like)
 
-            for r in rows:
-                time_str = _format_timestamp(r["timestamp"])
-                sender = "You" if r["is_from_me"] else (r["sender_name"] or r["sender_jid"])
-                results.append(
-                    {
-                        "id": r["id"],
-                        "chat": r["chat_name"] or r["chat_jid"],
-                        "chat_jid": r["chat_jid"],
-                        "sender": sender,
-                        "timestamp": time_str,
-                        "text": r["text"],
-                        "media_type": r["media_type"],
-                        "filename": r["media_filename"],
-                    }
+            ocr_sql = f"""
+            SELECT m.id, m.chat_jid, m.chat_name, m.sender_jid, m.sender_name, m.text, m.timestamp,
+                   m.is_from_me, m.media_type, m.media_filename, m.media_mimetype,
+                   c.ocr_text AS ocr_cached
+            FROM media_ocr_cache c
+            JOIN messages m ON c.msg_id = m.id
+            WHERE {' AND '.join(ocr_conds)}
+            ORDER BY m.timestamp DESC
+            LIMIT ?
+            """
+            ocr_rows = conn.execute(ocr_sql, tuple([*ocr_params, *base_params, cand_limit])).fetchall()
+            for r in ocr_rows:
+                ocr_txt = (r["ocr_cached"] or "").lower()
+                phrase_miss = 0 if (q_low in ocr_txt or q_low in (r["text"] or "").lower()) else 1
+                score = (phrase_miss, -0.5 if phrase_miss == 0 else 0.0, -int(r["timestamp"] or 0))
+                if r["id"] not in hits_by_id or score < hits_by_id[r["id"]][0]:
+                    hits_by_id[r["id"]] = (score, r)
+
+            if hits_by_id:
+                ranked = sorted(hits_by_id.values(), key=lambda item: item[0])[:limit]
+                return [self._format_search_hit(row) for _, row in ranked]
+
+            # 3. Tokenized LIKE fallback across text, filename, original_text, and ocr_cache (for punctuation/URLs/codes)
+            like_conds = list(base_conds)
+            like_params: list[Any] = []
+            if ocr_tokens:
+                for tok in ocr_tokens:
+                    tp = f"%{tok}%"
+                    like_conds.append(
+                        "(LOWER(COALESCE(m.text, '')) LIKE ? OR LOWER(COALESCE(m.media_filename, '')) LIKE ? OR LOWER(COALESCE(m.original_text, '')) LIKE ? OR LOWER(COALESCE(c.ocr_text, '')) LIKE ?)"
+                    )
+                    like_params.extend([tp, tp, tp, tp])
+            else:
+                like_conds.append(
+                    "(LOWER(COALESCE(m.text, '')) LIKE ? OR LOWER(COALESCE(m.media_filename, '')) LIKE ? OR LOWER(COALESCE(m.original_text, '')) LIKE ? OR LOWER(COALESCE(c.ocr_text, '')) LIKE ?)"
                 )
-            return results
+                like_params.extend([phrase_like, phrase_like, phrase_like, phrase_like])
 
-    def find_documents(self, query: str = "", chat_name_or_jid: str = "", limit: int = 15) -> list[dict[str, Any]]:
-        """Search specifically for documents (PDFs, spreadsheets, docs, presentations) by filename or keyword.
-        Supports stemming and flexible multi-keyword matching (e.g. 'invoices' matches 'invoice', 'gfl invoices' matches both).
+            fallback_sql = f"""
+            SELECT m.id, m.chat_jid, m.chat_name, m.sender_jid, m.sender_name, m.text, m.timestamp,
+                   m.is_from_me, m.media_type, m.media_filename, m.media_mimetype,
+                   c.ocr_text AS ocr_cached
+            FROM messages m
+            LEFT JOIN media_ocr_cache c ON m.id = c.msg_id
+            WHERE {' AND '.join(like_conds)}
+            ORDER BY m.timestamp DESC
+            LIMIT ?
+            """
+            rows = conn.execute(fallback_sql, tuple([*base_params, *like_params, limit])).fetchall()
+            return [self._format_search_hit(r) for r in rows]
+
+    def find_documents(
+        self,
+        query: str = "",
+        chat_name_or_jid: str = "",
+        limit: int = 15,
+        date_from: int = 0,
+        date_to: int = 0,
+    ) -> list[dict[str, Any]]:
+        """Search specifically for documents (PDFs, spreadsheets, docs, presentations) by filename, caption, or indexed text.
+        Supports stemming, flexible multi-keyword matching, and optional Unix date bounds.
         """
         target_jid = self.resolve_chat_jid(chat_name_or_jid) if chat_name_or_jid else None
 
@@ -1579,8 +1749,11 @@ class DatabaseManager:
                 conditions.append("(LOWER(sender_name) LIKE ? OR LOWER(chat_name) LIKE ?)")
                 params.extend([like_name, like_name])
 
+        dt_conds, dt_params = self._build_date_range_conditions(date_from, date_to, ts_expr="timestamp")
+        conditions.extend(dt_conds)
+        params.extend(dt_params)
+
         if query:
-            # Word stemming helper
             def _stem(w: str) -> str:
                 w = w.lower().strip()
                 if w.endswith("ies") and len(w) > 4:
@@ -1591,18 +1764,23 @@ class DatabaseManager:
                     return w[:-1]
                 return w
 
-            stop_words = {"the", "a", "an", "me", "my", "get", "send", "give", "show", "find", "all", "recent", "latest", "please", "file", "files"}
-            tokens = [w for w in re.findall(r"\w+", query.lower()) if w not in stop_words]
+            doc_stop = _SEARCH_STOP_WORDS | {"get", "send", "give", "show", "find", "all", "recent", "latest", "file", "files"}
+            tokens = [w for w in re.findall(r"\w+", query.lower()) if w not in doc_stop]
             stemmed = [_stem(t) for t in tokens if len(_stem(t)) >= 2]
 
             if stemmed:
                 for st in stemmed:
-                    conditions.append("(LOWER(media_filename) LIKE ? OR LOWER(text) LIKE ?)")
-                    params.extend([f"%{st}%", f"%{st}%"])
+                    tp = f"%{st}%"
+                    conditions.append(
+                        "(LOWER(media_filename) LIKE ? OR LOWER(text) LIKE ? OR id IN (SELECT msg_id FROM media_ocr_cache WHERE LOWER(ocr_text) LIKE ?))"
+                    )
+                    params.extend([tp, tp, tp])
             else:
                 cleaned = f"%{query.strip().lower()}%"
-                conditions.append("(LOWER(media_filename) LIKE ? OR LOWER(text) LIKE ?)")
-                params.extend([cleaned, cleaned])
+                conditions.append(
+                    "(LOWER(media_filename) LIKE ? OR LOWER(text) LIKE ? OR id IN (SELECT msg_id FROM media_ocr_cache WHERE LOWER(ocr_text) LIKE ?))"
+                )
+                params.extend([cleaned, cleaned, cleaned])
 
         where_clause = " AND ".join(conditions)
         sql = f"""
@@ -1766,15 +1944,24 @@ class DatabaseManager:
             return results
 
     def find_voice_notes_and_media(
-        self, media_type: str = "voice_note", query: str = "", chat_name_or_jid: str = "", limit: int = 15
+        self,
+        media_type: str = "voice_note",
+        query: str = "",
+        chat_name_or_jid: str = "",
+        limit: int = 15,
+        date_from: int = 0,
+        date_to: int = 0,
+        include_statuses: bool = False,
     ) -> list[dict[str, Any]]:
         """Find voice notes, audio files, images, or videos sent in conversations.
-        Searches in direct chats, matching sender names, captions, or group chats.
+        Searches in direct chats, matching sender names, captions, filenames, or cached OCR/transcripts.
         """
         target_jid = self.resolve_chat_jid(chat_name_or_jid) if chat_name_or_jid else None
 
-        conditions = ["chat_jid != 'status@broadcast'"]
+        conditions: list[str] = []
         params: list[Any] = []
+        if not include_statuses:
+            conditions.append("chat_jid != 'status@broadcast'")
 
         if media_type:
             conditions.append("media_type = ?")
@@ -1789,12 +1976,26 @@ class DatabaseManager:
                 conditions.append("(LOWER(sender_name) LIKE ? OR LOWER(chat_name) LIKE ?)")
                 params.extend([like_name, like_name])
 
+        dt_conds, dt_params = self._build_date_range_conditions(date_from, date_to, ts_expr="timestamp")
+        conditions.extend(dt_conds)
+        params.extend(dt_params)
+
         if query:
-            cleaned = f"%{query.strip().lower()}%"
-            conditions.append(
-                "(LOWER(text) LIKE ? OR LOWER(media_filename) LIKE ? OR id IN (SELECT msg_id FROM media_ocr_cache WHERE LOWER(ocr_text) LIKE ?))"
-            )
-            params.extend([cleaned, cleaned, cleaned])
+            raw_tokens = [t.lower() for t in self._tokenize_search_terms(query)]
+            tokens = [t for t in raw_tokens if t not in _SEARCH_STOP_WORDS] or raw_tokens
+            if tokens:
+                for tok in tokens:
+                    tp = f"%{tok}%"
+                    conditions.append(
+                        "(LOWER(COALESCE(text, '')) LIKE ? OR LOWER(COALESCE(media_filename, '')) LIKE ? OR id IN (SELECT msg_id FROM media_ocr_cache WHERE LOWER(ocr_text) LIKE ?))"
+                    )
+                    params.extend([tp, tp, tp])
+            else:
+                cleaned = f"%{query.strip().lower()}%"
+                conditions.append(
+                    "(LOWER(COALESCE(text, '')) LIKE ? OR LOWER(COALESCE(media_filename, '')) LIKE ? OR id IN (SELECT msg_id FROM media_ocr_cache WHERE LOWER(ocr_text) LIKE ?))"
+                )
+                params.extend([cleaned, cleaned, cleaned])
 
         where_clause = " AND ".join(conditions) if conditions else "1=1"
         sql = f"""
@@ -2305,31 +2506,61 @@ class DatabaseManager:
                 base_params.extend(mt_params)
 
             if q_clean:
-                try:
-                    safe_fts = q_clean.replace('"', '""')
-                    fts_conds = ["messages_fts MATCH ?", *base_conditions]
-                    fts_params: list[Any] = [f'"{safe_fts}"', *base_params, limit, offset]
-                    sql = f"""
-                    {cols_sql}
-                    FROM messages_fts f
-                    JOIN messages m ON f.rowid = m.rowid
-                    LEFT JOIN media_ocr_cache c ON m.id = c.msg_id
-                    WHERE {' AND '.join(fts_conds)}
-                    ORDER BY m.timestamp DESC
-                    LIMIT ? OFFSET ?
-                    """
-                    rows = conn.execute(sql, tuple(fts_params)).fetchall()
-                    if rows:
-                        return [self._format_web_message_row(r) for r in rows]
-                except Exception as e:
-                    logger.debug("Web FTS search fell back to LIKE (%s)", e)
+                raw_tokens = [t.lower() for t in self._tokenize_search_terms(q_clean)]
+                ocr_tokens = [t for t in raw_tokens if t not in _SEARCH_STOP_WORDS] or raw_tokens
+                ocr_sub_conds = ["c2.ocr_text NOT LIKE '[MEDIA_%'", "c2.ocr_text NOT LIKE '[OCR_SKIPPED%'"]
+                ocr_sub_params: list[Any] = []
+                if ocr_tokens:
+                    for tok in ocr_tokens:
+                        ocr_sub_conds.append("LOWER(c2.ocr_text) LIKE ?")
+                        ocr_sub_params.append(f"%{tok}%")
+                else:
+                    ocr_sub_conds.append("LOWER(c2.ocr_text) LIKE ?")
+                    ocr_sub_params.append(f"%{q_clean.lower()}%")
 
-                like_q = f"%{q_clean.lower()}%"
-                like_conds = [
-                    "(LOWER(COALESCE(m.text, '')) LIKE ? OR LOWER(COALESCE(m.media_filename, '')) LIKE ? OR LOWER(COALESCE(m.original_text, '')) LIKE ? OR LOWER(COALESCE(c.ocr_text, '')) LIKE ?)",
-                    *base_conditions,
-                ]
-                like_params: list[Any] = [like_q, like_q, like_q, like_q, *base_params, limit, offset]
+                for match_expr in self._build_fts_match_expressions(q_clean):
+                    try:
+                        union_conds = [
+                            f"""m.rowid IN (
+                                SELECT rowid FROM messages_fts WHERE messages_fts MATCH ?
+                                UNION
+                                SELECT m2.rowid FROM media_ocr_cache c2
+                                JOIN messages m2 ON c2.msg_id = m2.id
+                                WHERE {' AND '.join(ocr_sub_conds)}
+                            )""",
+                            *base_conditions,
+                        ]
+                        fts_params: list[Any] = [match_expr, *ocr_sub_params, *base_params, limit, offset]
+                        sql = f"""
+                        {cols_sql}
+                        FROM messages m
+                        LEFT JOIN media_ocr_cache c ON m.id = c.msg_id
+                        WHERE {' AND '.join(union_conds)}
+                        ORDER BY m.timestamp DESC
+                        LIMIT ? OFFSET ?
+                        """
+                        rows = conn.execute(sql, tuple(fts_params)).fetchall()
+                        if rows:
+                            return [self._format_web_message_row(r) for r in rows]
+                    except Exception as e:
+                        logger.debug("Web FTS search fell back to LIKE (%s)", e)
+
+                like_conds = list(base_conditions)
+                like_params: list[Any] = []
+                if ocr_tokens:
+                    for tok in ocr_tokens:
+                        tp = f"%{tok}%"
+                        like_conds.append(
+                            "(LOWER(COALESCE(m.text, '')) LIKE ? OR LOWER(COALESCE(m.media_filename, '')) LIKE ? OR LOWER(COALESCE(m.original_text, '')) LIKE ? OR LOWER(COALESCE(c.ocr_text, '')) LIKE ?)"
+                        )
+                        like_params.extend([tp, tp, tp, tp])
+                else:
+                    like_q = f"%{q_clean.lower()}%"
+                    like_conds.append(
+                        "(LOWER(COALESCE(m.text, '')) LIKE ? OR LOWER(COALESCE(m.media_filename, '')) LIKE ? OR LOWER(COALESCE(m.original_text, '')) LIKE ? OR LOWER(COALESCE(c.ocr_text, '')) LIKE ?)"
+                    )
+                    like_params.extend([like_q, like_q, like_q, like_q])
+
                 sql = f"""
                 {cols_sql}
                 FROM messages m
@@ -2338,7 +2569,7 @@ class DatabaseManager:
                 ORDER BY m.timestamp DESC
                 LIMIT ? OFFSET ?
                 """
-                rows = conn.execute(sql, tuple(like_params)).fetchall()
+                rows = conn.execute(sql, tuple([*base_params, *like_params, limit, offset])).fetchall()
                 return [self._format_web_message_row(r) for r in rows]
 
             where_sql = f"WHERE {' AND '.join(base_conditions)}" if base_conditions else ""

@@ -11,15 +11,13 @@ import subprocess
 import threading
 import time
 import urllib.parse
-from datetime import datetime, timedelta
 from http import HTTPStatus, cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from zoneinfo import ZoneInfo
 
 from .config import Config
-from .database import DatabaseManager
+from .database import DatabaseManager, parse_date_to_timestamp
 from .utils import extract_document_text
 
 logger = logging.getLogger(__name__)
@@ -42,23 +40,7 @@ def _bool_param(val: str | None) -> bool:
 
 def _parse_date_param(val: str | None, end_of_day: bool = False) -> int:
     """Parse YYYY-MM-DD or unix epoch string into a Unix timestamp (or 0 if blank/invalid)."""
-    raw = (val or "").strip()
-    if not raw:
-        return 0
-    if raw.isdigit():
-        ts = int(raw)
-        return ts if ts > 0 else 0
-    try:
-        tz = ZoneInfo(Config.TZ)
-    except Exception:
-        tz = datetime.now().astimezone().tzinfo
-    try:
-        dt = datetime.strptime(raw[:10], "%Y-%m-%d").replace(tzinfo=tz)
-        if end_of_day:
-            dt = dt + timedelta(hours=23, minutes=59, seconds=59)
-        return max(0, int(dt.timestamp()))
-    except ValueError:
-        return 0
+    return parse_date_to_timestamp(val, end_of_day=end_of_day, tz_name=Config.TZ)
 
 
 _LOGOUT_BTN_HTML = (
