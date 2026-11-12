@@ -1159,6 +1159,70 @@ class WhatsAppBot:
                 )
             return f"Found matching documents for '{query}', but could not download them from WhatsApp."
 
+    def send_media_by_id_to_self(self, msg_id: str) -> tuple[bool, str]:
+        """Deliver a stored file, media attachment, or message snippet directly into WhatsApp self-chat."""
+        row = self.db.get_message_media_info(msg_id)
+        if not row:
+            return False, "Message not found."
+
+        dest_jid = getattr(self, "last_self_chat_jid", None) or self.my_jid
+        if not dest_jid:
+            return False, "WhatsApp self-chat is not connected yet."
+
+        mt = (row.get("media_type") or "text").lower()
+        chat_name = row.get("chat_name") or row.get("chat_jid") or "Unknown"
+        sender_name = "You" if row.get("is_from_me") else (row.get("sender_name") or chat_name)
+        text_body = (row.get("text") or "").strip()
+
+        if mt in ("text", "link", "contact", "poll", "location"):
+            if not text_body:
+                return False, "Message has no text or attachment to send."
+            quote_msg = f"📌 *{sender_name}* in _{chat_name}_\n\n{text_body}"
+            try:
+                resp = self.client.send_message(dest_jid, quote_msg)
+                if resp and hasattr(resp, "ID"):
+                    self.dedup.add(resp.ID)
+                return True, "Sent message snippet to WhatsApp self-chat."
+            except Exception as exc:
+                logger.exception("Failed sending snippet %s to self-chat: %s", msg_id, exc)
+                return False, f"Failed to send message: {exc}"
+
+        file_path, real_filename, mimetype, err = self.download_media_by_id(msg_id)
+        if err or not file_path:
+            return False, err or "Media file is unavailable on disk."
+
+        fname = real_filename or row.get("media_filename") or Path(file_path).name
+        mime = mimetype or row.get("media_mimetype") or "application/octet-stream"
+        caption = f"📎 *{fname}*\nChat: _{chat_name}_"
+        if text_body and text_body != fname:
+            caption += f"\n{text_body[:300]}"
+
+        try:
+            resp = None
+            if (mt == "image" or mime.startswith("image/")) and mt != "sticker":
+                resp = self.client.send_image(to=dest_jid, file=file_path, caption=caption)
+            elif mt == "video" or mime.startswith("video/"):
+                resp = self.client.send_video(to=dest_jid, file=file_path, caption=caption)
+            elif mt in ("voice_note", "audio") or mime.startswith("audio/"):
+                resp = self.client.send_audio(to=dest_jid, file=file_path, ptt=(mt == "voice_note"))
+            elif mt == "sticker":
+                resp = self.client.send_sticker(to=dest_jid, file=file_path)
+            else:
+                resp = self.client.send_document(
+                    to=dest_jid,
+                    file=file_path,
+                    filename=fname,
+                    mimetype=mime,
+                    caption=caption,
+                )
+            if resp and hasattr(resp, "ID"):
+                self.dedup.add(resp.ID)
+            logger.info("Sent %s '%s' to WhatsApp self-chat from Web UI.", mt, fname)
+            return True, f"Sent '{fname}' to WhatsApp self-chat."
+        except Exception as exc:
+            logger.exception("Failed sending media %s to self-chat: %s", msg_id, exc)
+            return False, f"WhatsApp send failed: {exc}"
+
     def read_and_ocr_document(
         self, query: str = "", specific_question: str = "", message_id: str = ""
     ) -> str:

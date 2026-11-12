@@ -5,21 +5,27 @@ import json
 import logging
 import mimetypes
 import re
+import secrets
 import shutil
 import subprocess
 import threading
 import time
 import urllib.parse
-from http import HTTPStatus
+from datetime import datetime, timedelta
+from http import HTTPStatus, cookies
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from .config import Config
 from .database import DatabaseManager
 from .utils import extract_document_text
 
 logger = logging.getLogger(__name__)
+
+_SESSION_COOKIE_NAME = "wamate_session"
+_SESSION_TTL_SEC = 14 * 24 * 3600
 
 
 def _clamp_int(val: str | None, default: int, min_val: int, max_val: int) -> int:
@@ -32,6 +38,204 @@ def _clamp_int(val: str | None, default: int, min_val: int, max_val: int) -> int
 
 def _bool_param(val: str | None) -> bool:
     return (val or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _parse_date_param(val: str | None, end_of_day: bool = False) -> int:
+    """Parse YYYY-MM-DD or unix epoch string into a Unix timestamp (or 0 if blank/invalid)."""
+    raw = (val or "").strip()
+    if not raw:
+        return 0
+    if raw.isdigit():
+        ts = int(raw)
+        return ts if ts > 0 else 0
+    try:
+        tz = ZoneInfo(Config.TZ)
+    except Exception:
+        tz = datetime.now().astimezone().tzinfo
+    try:
+        dt = datetime.strptime(raw[:10], "%Y-%m-%d").replace(tzinfo=tz)
+        if end_of_day:
+            dt = dt + timedelta(hours=23, minutes=59, seconds=59)
+        return max(0, int(dt.timestamp()))
+    except ValueError:
+        return 0
+
+
+_LOGOUT_BTN_HTML = (
+    '<button id="logoutBtn" type="button" class="ghost-btn logout-btn" '
+    'title="Sign out of this browser session">'
+    '<svg class="ico-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" '
+    'stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>'
+    '<polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>'
+    '<span>Sign Out</span></button>'
+)
+
+_LOGIN_HTML = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Sign In — WAmate Second Brain</title>
+<style>
+  :root {
+    --bg: #070d12;
+    --panel: #0e171e;
+    --card: #16232d;
+    --border: rgba(255, 255, 255, 0.09);
+    --text: #eef3f7;
+    --muted: #7f929f;
+    --accent: #00c896;
+    --accent-dim: rgba(0, 200, 150, 0.14);
+    --danger: #f45b69;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background:
+      radial-gradient(circle at 20% 20%, rgba(0, 200, 150, 0.09), transparent 45%),
+      radial-gradient(circle at 80% 80%, rgba(56, 189, 248, 0.08), transparent 45%),
+      var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Inter", sans-serif;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+  }
+  .login-card {
+    width: 100%;
+    max-width: 390px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 28px 26px 24px;
+    box-shadow: 0 22px 54px rgba(0, 0, 0, 0.55);
+  }
+  .brand-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 18px;
+  }
+  .brand-mark {
+    width: 40px;
+    height: 40px;
+    border-radius: 12px;
+    background: linear-gradient(135deg, #00c896, #0ea5e9);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #041d19;
+    flex-shrink: 0;
+  }
+  .brand-mark svg { width: 22px; height: 22px; }
+  .brand-title { font-size: 1.15rem; font-weight: 700; letter-spacing: -0.02em; }
+  .brand-sub { font-size: 0.78rem; color: var(--muted); }
+  .desc { font-size: 0.85rem; color: var(--muted); line-height: 1.48; margin: 0 0 18px; }
+  label { display: block; font-size: 0.78rem; font-weight: 600; color: #c2cfd8; margin-bottom: 7px; }
+  input[type="password"] {
+    width: 100%;
+    padding: 11px 13px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: var(--card);
+    color: var(--text);
+    font-size: 0.94rem;
+    outline: none;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  }
+  input[type="password"]:focus {
+    border-color: rgba(0, 200, 150, 0.65);
+    box-shadow: 0 0 0 3px rgba(0, 200, 150, 0.2);
+  }
+  .submit-btn {
+    width: 100%;
+    margin-top: 14px;
+    padding: 11px 16px;
+    border: none;
+    border-radius: 10px;
+    background: linear-gradient(135deg, #00c896, #14b8a6);
+    color: #03201b;
+    font-size: 0.92rem;
+    font-weight: 700;
+    cursor: pointer;
+    transition: opacity 0.15s ease, transform 0.1s ease;
+  }
+  .submit-btn:hover { opacity: 0.93; }
+  .submit-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .err-box {
+    display: none;
+    margin-top: 12px;
+    padding: 9px 11px;
+    border-radius: 9px;
+    font-size: 0.82rem;
+    background: rgba(244, 91, 105, 0.14);
+    border: 1px solid rgba(244, 91, 105, 0.36);
+    color: #ff9aa3;
+  }
+</style>
+</head>
+<body>
+  <form id="loginForm" class="login-card">
+    <div class="brand-row">
+      <div class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>
+          <path d="M12 8v4l2.5 1.5"/>
+        </svg>
+      </div>
+      <div>
+        <div class="brand-title">WAmate</div>
+        <div class="brand-sub">Second Brain Explorer</div>
+      </div>
+    </div>
+    <p class="desc">Enter your Web UI password to unlock local chat search, media vault, and AI assistant.</p>
+    <label for="pwInput">Access Password</label>
+    <input id="pwInput" type="password" autocomplete="current-password" placeholder="Enter WEB_UI_PASSWORD" required autofocus />
+    <button id="loginBtn" type="submit" class="submit-btn">Unlock Explorer</button>
+    <div id="loginErr" class="err-box"></div>
+  </form>
+<script>
+  const form = document.getElementById('loginForm');
+  const pwInput = document.getElementById('pwInput');
+  const btn = document.getElementById('loginBtn');
+  const errBox = document.getElementById('loginErr');
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    errBox.style.display = 'none';
+    btn.disabled = true;
+    btn.textContent = 'Signing in...';
+    try {
+      const res = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ password: pwInput.value })
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || 'Incorrect password');
+      }
+      window.location.href = '/';
+    } catch (err) {
+      errBox.textContent = err.message || 'Sign in failed';
+      errBox.style.display = 'block';
+      pwInput.focus();
+      pwInput.select();
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Unlock Explorer';
+    }
+  });
+</script>
+</body>
+</html>
+"""
+
+
+def _build_login_page() -> str:
+    """Return the dark session-cookie login screen for password-protected Web UI."""
+    return _LOGIN_HTML
 
 
 _AI_TAB_BTN = (
@@ -81,6 +285,11 @@ _AI_PANEL_HTML = r"""
         <div id="askFocusBanner" class="ask-focus-banner" style="display:none">
           <span class="muted">Context focus:</span>
           <span id="askFocusChip" class="focus-chip"></span>
+        </div>
+        <div id="askItemBanner" class="ask-focus-banner" style="display:none">
+          <span class="muted">Attached item:</span>
+          <span id="askItemChip" class="focus-chip item-chip"></span>
+          <button id="askItemClearBtn" type="button" class="icon-clear" title="Detach item" style="position:static;margin-left:2px">&times;</button>
         </div>
         <div class="ask-composer">
           <textarea id="askInput" rows="1" placeholder="Ask anything about your WhatsApp messages, invoices, PDFs, voice notes, or deleted texts..."></textarea>
@@ -328,7 +537,7 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
     font-weight: 500;
   }
 
-  input[type="text"], input[type="search"], select, textarea {
+  input[type="text"], input[type="search"], input[type="date"], select, textarea {
     background: var(--card);
     border: 1px solid var(--border);
     color: var(--text);
@@ -337,12 +546,14 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
     font-size: 0.88rem;
     font-family: inherit;
     outline: none;
+    color-scheme: dark;
     transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
   }
+  input[type="date"] { padding: 7px 9px; font-size: 0.81rem; width: 132px; }
   input[type="text"]::placeholder, input[type="search"]::placeholder, textarea::placeholder {
     color: var(--muted);
   }
-  input[type="text"]:focus, input[type="search"]:focus, select:focus {
+  input[type="text"]:focus, input[type="search"]:focus, input[type="date"]:focus, select:focus {
     border-color: var(--accent);
     background: #192834;
     box-shadow: 0 0 0 3px var(--accent-ring);
@@ -1371,6 +1582,103 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
     transition: opacity 0.18s ease, transform 0.18s ease;
     z-index: 60;
   }
+  .header-right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+  .logout-btn {
+    padding: 5px 10px;
+    font-size: 0.77rem;
+    border-radius: 9px;
+    color: var(--text-soft);
+  }
+  .logout-btn:hover { color: #ff949e; border-color: rgba(244, 91, 105, 0.42); }
+
+  .date-range-group {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    flex-wrap: wrap;
+  }
+  .date-sep { color: var(--muted); font-size: 0.78rem; }
+  .preset-group {
+    display: inline-flex;
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    padding: 2px;
+    gap: 2px;
+  }
+  .preset-btn {
+    background: transparent;
+    color: var(--muted);
+    border: none;
+    padding: 4px 8px;
+    font-size: 0.74rem;
+    font-weight: 600;
+    border-radius: 7px;
+    cursor: pointer;
+    transition: background 0.14s ease, color 0.14s ease;
+  }
+  .preset-btn:hover { color: var(--text); }
+  .preset-btn.active {
+    background: var(--accent-dim);
+    color: var(--accent-bright);
+  }
+
+  .msg-action-bar {
+    margin-top: 9px;
+    padding-top: 8px;
+    border-top: 1px solid rgba(255, 255, 255, 0.05);
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+  }
+  .bubble-actions {
+    margin-top: 6px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    opacity: 0.85;
+  }
+  .bubble:hover .bubble-actions { opacity: 1; }
+  .action-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid var(--border);
+    color: var(--text-soft);
+    padding: 3px 9px;
+    border-radius: 999px;
+    font-size: 0.73rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease;
+  }
+  .action-pill svg { width: 12px; height: 12px; flex-shrink: 0; }
+  .action-pill:hover { background: var(--card-hover); color: var(--text); border-color: var(--border-strong); }
+  .action-pill.ai-pill:hover {
+    background: rgba(56, 189, 248, 0.14);
+    border-color: rgba(56, 189, 248, 0.42);
+    color: #93e8f8;
+  }
+  .action-pill.wa-pill:hover {
+    background: var(--accent-dim);
+    border-color: rgba(0, 200, 150, 0.44);
+    color: #9bf3da;
+  }
+  .action-pill:disabled { opacity: 0.55; cursor: not-allowed; }
+  .focus-chip.item-chip {
+    background: rgba(56, 189, 248, 0.14);
+    border-color: rgba(56, 189, 248, 0.34);
+    color: #bae6fd;
+  }
+
   .toast.show { opacity: 1; transform: translateY(0); }
 
   @media (max-width: 820px) {
@@ -1381,6 +1689,7 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
     .chat-sidebar { max-height: 280px; }
     .chat-view { min-height: 430px; }
     .grow, .chat-filter-box { min-width: 100%; max-width: none; }
+    input[type="date"] { width: 122px; }
     .ask-topbar { padding: 10px 14px; }
     .ask-scope-wrap input { width: 170px; }
     .ask-stream { padding: 14px 12px; }
@@ -1404,7 +1713,10 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
       <span class="brand-sub">Second Brain</span>
     </div>
   </div>
-  <div id="statsStrip" class="stats-strip"><span class="stat-pill">Loading stats...</span></div>
+  <div class="header-right">
+    <div id="statsStrip" class="stats-strip"><span class="stat-pill">Loading stats...</span></div>
+    __LOGOUT_BTN__
+  </div>
 </header>
 
 <nav class="tabs">
@@ -1452,6 +1764,17 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
         <option value="location">Locations</option>
       </select>
       <label class="check"><input id="searchStatuses" type="checkbox" /> Statuses</label>
+      <div class="date-range-group" data-date-group="search" title="Filter messages by date range">
+        <input id="searchFrom" type="date" aria-label="From date" title="From date" />
+        <span class="date-sep">&ndash;</span>
+        <input id="searchTo" type="date" aria-label="To date" title="To date" />
+        <div class="preset-group">
+          <button type="button" class="preset-btn active" data-preset="all">All</button>
+          <button type="button" class="preset-btn" data-preset="today">Today</button>
+          <button type="button" class="preset-btn" data-preset="7d">7d</button>
+          <button type="button" class="preset-btn" data-preset="30d">30d</button>
+        </div>
+      </div>
       <button id="searchBtn" class="primary-btn">
         <svg class="ico-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
         <span>Search</span>
@@ -1524,6 +1847,17 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
       </select>
       <input id="mediaQuery" class="grow" type="search" placeholder="Filter by filename, caption or OCR text..." />
       <label class="check"><input id="mediaStatuses" type="checkbox" checked /> Statuses</label>
+      <div class="date-range-group" data-date-group="media" title="Filter stored media by date range">
+        <input id="mediaFrom" type="date" aria-label="From date" title="From date" />
+        <span class="date-sep">&ndash;</span>
+        <input id="mediaTo" type="date" aria-label="To date" title="To date" />
+        <div class="preset-group">
+          <button type="button" class="preset-btn active" data-preset="all">All</button>
+          <button type="button" class="preset-btn" data-preset="today">Today</button>
+          <button type="button" class="preset-btn" data-preset="7d">7d</button>
+          <button type="button" class="preset-btn" data-preset="30d">30d</button>
+        </div>
+      </div>
       <button id="mediaSearchBtn" class="primary-btn">Apply</button>
       <button id="mediaClearBtn" class="ghost-btn" title="Reset Media Filters">Clear</button>
     </div>
@@ -1546,6 +1880,17 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
         <option value="dm">1-on-1 DMs</option>
         <option value="group">Groups Only</option>
       </select>
+      <div class="date-range-group" data-date-group="vault" title="Filter vault items by date range">
+        <input id="vaultFrom" type="date" aria-label="From date" title="From date" />
+        <span class="date-sep">&ndash;</span>
+        <input id="vaultTo" type="date" aria-label="To date" title="To date" />
+        <div class="preset-group">
+          <button type="button" class="preset-btn active" data-preset="all">All</button>
+          <button type="button" class="preset-btn" data-preset="today">Today</button>
+          <button type="button" class="preset-btn" data-preset="7d">7d</button>
+          <button type="button" class="preset-btn" data-preset="30d">30d</button>
+        </div>
+      </div>
       <button id="vaultRefreshBtn" class="primary-btn">Refresh Vault</button>
       <button id="vaultClearBtn" class="ghost-btn" title="Reset Vault Filters">Clear</button>
     </div>
@@ -1566,6 +1911,7 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
 <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
 <script>
+__WAMATE_CAPS_JS__
 const esc = (s) => String(s ?? '')
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
   .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
@@ -1681,6 +2027,161 @@ function askAiAboutChat(target) {
   document.getElementById('askInput')?.focus();
 }
 
+// Direct Message / Media Actions (Ask AI + Send to WhatsApp + Date Filters)
+window._msgMeta = {};
+let _askContext = null;
+
+function rememberMsgMeta(m) {
+  if (!m || !m.id) return;
+  const keys = Object.keys(window._msgMeta);
+  if (keys.length > 600) {
+    for (let i = 0; i < 150; i++) delete window._msgMeta[keys[i]];
+  }
+  const chatName = m.chat_name || m.chat || '';
+  const senderName = m.sender || chatName || 'Unknown';
+  const snippetRaw = (m.media_filename || m.original_text || m.text || m.media_type || '').replace(/\s+/g, ' ').trim();
+  const snippet = snippetRaw.length > 52 ? `${snippetRaw.slice(0, 52)}...` : snippetRaw;
+  window._msgMeta[m.id] = {
+    id: m.id,
+    chatTarget: m.chat_phone || chatName || m.chat_jid || '',
+    label: `${senderName}${chatName && senderName !== chatName ? ` (${chatName})` : ''}${snippet ? `: ${snippet}` : ''}`
+  };
+}
+
+function setAskItemContext(ctx) {
+  _askContext = ctx && ctx.id ? ctx : null;
+  const banner = document.getElementById('askItemBanner');
+  const chip = document.getElementById('askItemChip');
+  if (banner && chip) {
+    banner.style.display = _askContext ? 'flex' : 'none';
+    if (_askContext) chip.textContent = _askContext.label || _askContext.id;
+  }
+}
+
+function askAiAboutMessage(msgId) {
+  if (!document.getElementById('tab-ask')) return;
+  const dlg = document.getElementById('previewDialog');
+  if (dlg && dlg.open) dlg.close();
+  const meta = window._msgMeta[msgId] || { id: msgId, label: msgId, chatTarget: '' };
+  setAskItemContext({ id: msgId, label: meta.label || msgId });
+  switchTab('ask');
+  const fc = document.getElementById('askChatFocus');
+  if (fc && meta.chatTarget) {
+    fc.value = meta.chatTarget;
+    syncAskScopeUi();
+  }
+  const inp = document.getElementById('askInput');
+  if (inp) {
+    if (!inp.value.trim()) inp.placeholder = 'Ask a question about the attached message/file...';
+    inp.focus();
+  }
+}
+
+async function sendToWhatsApp(msgId, btn) {
+  if (!msgId || !WAMATE_CAPS.hasWa) return;
+  const origHtml = btn ? btn.innerHTML : '';
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Sending...';
+  }
+  try {
+    const res = await fetch('/api/send_to_whatsapp', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ msg_id: msgId })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    showToast(data.detail || 'Sent to your WhatsApp self-chat');
+    if (btn) {
+      btn.textContent = 'Sent';
+      setTimeout(() => { btn.innerHTML = origHtml; btn.disabled = false; }, 1800);
+      return;
+    }
+  } catch (e) {
+    showToast(`Send failed: ${e.message}`);
+  }
+  if (btn) {
+    btn.innerHTML = origHtml;
+    btn.disabled = false;
+  }
+}
+
+const _AI_BTN_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 4.7L18.6 9.6l-4.7 1.9L12 16.2l-1.9-4.7L5.4 9.6l4.7-1.9L12 3z"/></svg>';
+const _WA_BTN_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>';
+
+function renderMsgActions(id, opts={}) {
+  if (!id) return '';
+  const parts = [];
+  if (WAMATE_CAPS.hasAi) {
+    parts.push(`<button type="button" class="action-pill ai-pill" onclick="askAiAboutMessage(${escArg(id)})" title="Ask WAmate AI about this item">${_AI_BTN_SVG}<span>Ask AI</span></button>`);
+  }
+  if (WAMATE_CAPS.hasWa && opts.canSendWa !== false) {
+    parts.push(`<button type="button" class="action-pill wa-pill" onclick="sendToWhatsApp(${escArg(id)}, this)" title="Send directly to your WhatsApp Saved Messages / self-chat">${_WA_BTN_SVG}<span>Send to WA</span></button>`);
+  }
+  if (!parts.length) return '';
+  const cls = opts.compact ? 'bubble-actions' : 'msg-action-bar';
+  return `<div class="${cls}">${parts.join('')}</div>`;
+}
+
+function fmtLocalYmd(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function setPresetActive(groupName, activePreset) {
+  document.querySelectorAll(`[data-date-group="${groupName}"] .preset-btn`).forEach(b => {
+    b.classList.toggle('active', b.dataset.preset === activePreset);
+  });
+}
+
+function setupDateGroup(groupName, fromId, toId, onChangeFn) {
+  const fromEl = document.getElementById(fromId);
+  const toEl = document.getElementById(toId);
+  if (!fromEl || !toEl) return;
+  const syncPreset = () => {
+    const f = fromEl.value;
+    const t = toEl.value;
+    if (!f && !t) { setPresetActive(groupName, 'all'); return; }
+    const todayStr = fmtLocalYmd(new Date());
+    if (f === todayStr && t === todayStr) { setPresetActive(groupName, 'today'); return; }
+    const d7 = new Date(); d7.setDate(d7.getDate() - 6);
+    if (f === fmtLocalYmd(d7) && t === todayStr) { setPresetActive(groupName, '7d'); return; }
+    const d30 = new Date(); d30.setDate(d30.getDate() - 29);
+    if (f === fmtLocalYmd(d30) && t === todayStr) { setPresetActive(groupName, '30d'); return; }
+    setPresetActive(groupName, '');
+  };
+  [fromEl, toEl].forEach(el => el.addEventListener('change', () => { syncPreset(); onChangeFn(); }));
+  document.querySelectorAll(`[data-date-group="${groupName}"] .preset-btn`).forEach(btn => {
+    btn.addEventListener('click', () => {
+      const p = btn.dataset.preset;
+      const now = new Date();
+      const todayStr = fmtLocalYmd(now);
+      if (p === 'all') { fromEl.value = ''; toEl.value = ''; }
+      else if (p === 'today') { fromEl.value = todayStr; toEl.value = todayStr; }
+      else if (p === '7d') { const d = new Date(); d.setDate(d.getDate() - 6); fromEl.value = fmtLocalYmd(d); toEl.value = todayStr; }
+      else if (p === '30d') { const d = new Date(); d.setDate(d.getDate() - 29); fromEl.value = fmtLocalYmd(d); toEl.value = todayStr; }
+      setPresetActive(groupName, p);
+      onChangeFn();
+    });
+  });
+}
+
+function resetDateGroup(groupName, fromId, toId) {
+  const f = document.getElementById(fromId);
+  const t = document.getElementById(toId);
+  if (f) f.value = '';
+  if (t) t.value = '';
+  setPresetActive(groupName, 'all');
+}
+
+document.getElementById('logoutBtn')?.addEventListener('click', async () => {
+  try { await fetch('/api/logout', { method: 'POST' }); } catch (_) {}
+  window.location.href = '/';
+});
+
 // Chat / Phone Suggestions Datalist
 let _lastSuggestQ = null;
 async function loadChatSuggestions(q='') {
@@ -1789,6 +2290,7 @@ function renderMediaSnippet(m) {
 }
 
 function renderMessageCard(m) {
+  rememberMsgMeta(m);
   let badges = `<span class="badge">${esc(m.media_type)}</span>`;
   if (m.has_local_media) badges += `<span class="badge saved">Saved</span>`;
   if (m.ocr_cached) badges += `<span class="badge ai">AI Cached</span>`;
@@ -1816,6 +2318,7 @@ function renderMessageCard(m) {
       ${origHtml}
       ${ocrHtml}
       ${renderMediaSnippet(m)}
+      ${renderMsgActions(m.id)}
     </div>
   `;
 }
@@ -1827,11 +2330,14 @@ function renderSearchSummary(count) {
   const chat = document.getElementById('searchChat').value.trim();
   const scope = document.getElementById('searchScope').value;
   const mediaType = document.getElementById('searchType').value;
+  const fromD = document.getElementById('searchFrom').value;
+  const toD = document.getElementById('searchTo').value;
   const chips = [];
   if (q) chips.push(`Query: ${q}`);
   if (chat) chips.push(`Chat/Phone: ${chat}`);
   if (scope !== 'all') chips.push(scope === 'dm' ? '1-on-1 DMs' : 'Groups');
   if (mediaType !== 'all') chips.push(`Type: ${mediaType}`);
+  if (fromD || toD) chips.push(`Dates: ${fromD || '...'} -> ${toD || '...'}`);
   document.getElementById('searchSummary').innerHTML = `
     <span>${count ? `Showing ${count} loaded result${count === 1 ? '' : 's'}` : 'No results'}</span>
     <div class="active-chips">${chips.map(c => `<span class="filter-chip">${esc(c)}</span>`).join('')}</div>
@@ -1845,11 +2351,13 @@ async function runSearch(reset=true) {
   const scope = document.getElementById('searchScope').value;
   const mediaType = document.getElementById('searchType').value;
   const statuses = document.getElementById('searchStatuses').checked ? '1' : '0';
-  const rows = await apiGet(`/api/search?q=${encodeURIComponent(q)}&chat=${encodeURIComponent(chat)}&scope=${encodeURIComponent(scope)}&media_type=${encodeURIComponent(mediaType)}&statuses=${statuses}&limit=50&offset=${searchOffset}`);
+  const fromD = document.getElementById('searchFrom').value;
+  const toD = document.getElementById('searchTo').value;
+  const rows = await apiGet(`/api/search?q=${encodeURIComponent(q)}&chat=${encodeURIComponent(chat)}&scope=${encodeURIComponent(scope)}&media_type=${encodeURIComponent(mediaType)}&statuses=${statuses}&from=${encodeURIComponent(fromD)}&to=${encodeURIComponent(toD)}&limit=50&offset=${searchOffset}`);
   const box = document.getElementById('searchResults');
   if (reset) box.innerHTML = '';
   if (!rows.length && reset) {
-    box.innerHTML = '<div class="empty-state"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg><div>No matching messages found.</div><div class="muted">Try shorter keywords, phone digits (e.g. 98505), or switch chat scope.</div></div>';
+    box.innerHTML = '<div class="empty-state"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg><div>No matching messages found.</div><div class="muted">Try shorter keywords, phone digits (e.g. 98505), or widen date filters.</div></div>';
   } else {
     box.insertAdjacentHTML('beforeend', rows.map(renderMessageCard).join(''));
     searchOffset += rows.length;
@@ -1862,12 +2370,14 @@ document.getElementById('searchMoreBtn').addEventListener('click', () => runSear
 document.getElementById('searchScope').addEventListener('change', () => runSearch(true));
 document.getElementById('searchType').addEventListener('change', () => runSearch(true));
 document.getElementById('searchStatuses').addEventListener('change', () => runSearch(true));
+setupDateGroup('search', 'searchFrom', 'searchTo', () => runSearch(true));
 document.getElementById('searchClearBtn').addEventListener('click', () => {
   document.getElementById('searchQuery').value = '';
   document.getElementById('searchChat').value = '';
   document.getElementById('searchScope').value = 'all';
   document.getElementById('searchType').value = 'all';
   document.getElementById('searchStatuses').checked = false;
+  resetDateGroup('search', 'searchFrom', 'searchTo');
   runSearch(true);
 });
 ['searchQuery', 'searchChat'].forEach(id => document.getElementById(id).addEventListener('keydown', e => { if (e.key === 'Enter') runSearch(true); }));
@@ -1909,6 +2419,7 @@ document.querySelectorAll('#chatScopePills .scope-btn').forEach(btn => {
 });
 
 function renderBubble(m) {
+  rememberMsgMeta({ ...m, chat_jid: activeChatJid, chat_name: document.getElementById('activeChatTitle')?.textContent || '', chat_phone: activeChatPhone });
   const tags = [];
   if (m.is_deleted) tags.push('<span class="badge deleted">Deleted</span>');
   if (m.is_edited) tags.push('<span class="badge edited">Edited</span>');
@@ -1920,6 +2431,7 @@ function renderBubble(m) {
       <div class="msg-body">${esc(m.text || m.media_filename || '')}</div>
       ${orig}
       ${renderMediaSnippet(m)}
+      ${renderMsgActions(m.id, { compact: true })}
       <div class="bubble-ts">${esc(m.timestamp_str)}</div>
     </div>
   `;
@@ -1988,13 +2500,16 @@ async function loadMedia(reset=true) {
   const scope = document.getElementById('mediaScope').value;
   const q = document.getElementById('mediaQuery').value.trim();
   const statuses = document.getElementById('mediaStatuses').checked ? '1' : '0';
-  const rows = await apiGet(`/api/media_list?filter=${encodeURIComponent(f)}&chat=${encodeURIComponent(chat)}&scope=${encodeURIComponent(scope)}&q=${encodeURIComponent(q)}&statuses=${statuses}&limit=60&offset=${mediaOffset}`);
+  const fromD = document.getElementById('mediaFrom').value;
+  const toD = document.getElementById('mediaTo').value;
+  const rows = await apiGet(`/api/media_list?filter=${encodeURIComponent(f)}&chat=${encodeURIComponent(chat)}&scope=${encodeURIComponent(scope)}&q=${encodeURIComponent(q)}&statuses=${statuses}&from=${encodeURIComponent(fromD)}&to=${encodeURIComponent(toD)}&limit=60&offset=${mediaOffset}`);
   const grid = document.getElementById('mediaGrid');
   if (reset) grid.innerHTML = '';
   if (!rows.length && reset) {
     grid.innerHTML = '<div class="empty-state" style="grid-column:1/-1"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect width="18" height="18" x="3" y="3" rx="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3-3-11 9"/></svg><div>No stored media matching these filters.</div></div>';
   } else {
     grid.insertAdjacentHTML('beforeend', rows.map(m => {
+      rememberMsgMeta(m);
       const mt = (m.media_type || '').toLowerCase();
       const mime = (m.media_mimetype || '').toLowerCase();
       const isImg = mt === 'image' || mt === 'sticker' || mime.startsWith('image/');
@@ -2023,6 +2538,8 @@ async function loadMedia(reset=true) {
               <a class="ghost-btn" href="${mediaUrl(m.id, true)}">Save</a>
               ${isVid ? `<button class="ghost-btn" onclick="${clickCall}">▶ Play</button>` : ''}
               ${mt === 'document' ? `<button class="ghost-btn" onclick="openDocModal(${escArg(m.id)},${escArg(fname)})">Extract Text</button>` : ''}
+              ${WAMATE_CAPS.hasAi ? `<button class="action-pill ai-pill" onclick="askAiAboutMessage(${escArg(m.id)})" title="Ask AI about this file">${_AI_BTN_SVG}<span>Ask AI</span></button>` : ''}
+              ${WAMATE_CAPS.hasWa ? `<button class="action-pill wa-pill" onclick="sendToWhatsApp(${escArg(m.id)}, this)" title="Send to your WhatsApp self-chat">${_WA_BTN_SVG}<span>Send</span></button>` : ''}
             </div>
           </div>
         </div>
@@ -2038,12 +2555,14 @@ document.getElementById('mediaFilter').addEventListener('change', () => loadMedi
 document.getElementById('mediaScope').addEventListener('change', () => loadMedia(true));
 document.getElementById('mediaStatuses').addEventListener('change', () => loadMedia(true));
 document.getElementById('mediaMoreBtn').addEventListener('click', () => loadMedia(false));
+setupDateGroup('media', 'mediaFrom', 'mediaTo', () => loadMedia(true));
 document.getElementById('mediaClearBtn').addEventListener('click', () => {
   document.getElementById('mediaFilter').value = 'all';
   document.getElementById('mediaChat').value = '';
   document.getElementById('mediaScope').value = 'all';
   document.getElementById('mediaQuery').value = '';
   document.getElementById('mediaStatuses').checked = true;
+  resetDateGroup('media', 'mediaFrom', 'mediaTo');
   loadMedia(true);
 });
 ['mediaChat', 'mediaQuery'].forEach(id => document.getElementById(id).addEventListener('keydown', e => { if (e.key === 'Enter') loadMedia(true); }));
@@ -2054,13 +2573,16 @@ async function loadVault() {
   const mode = document.getElementById('vaultMode').value;
   const q = document.getElementById('vaultQuery').value.trim();
   const scope = document.getElementById('vaultScope').value;
-  const rows = await apiGet(`/api/vault?mode=${encodeURIComponent(mode)}&q=${encodeURIComponent(q)}&scope=${encodeURIComponent(scope)}&limit=50`);
+  const fromD = document.getElementById('vaultFrom').value;
+  const toD = document.getElementById('vaultTo').value;
+  const rows = await apiGet(`/api/vault?mode=${encodeURIComponent(mode)}&q=${encodeURIComponent(q)}&scope=${encodeURIComponent(scope)}&from=${encodeURIComponent(fromD)}&to=${encodeURIComponent(toD)}&limit=50`);
   const el = document.getElementById('vaultResults');
   if (!rows.length) {
     el.innerHTML = '<div class="empty-state"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg><div>No matching deleted or edited messages found.</div><div class="muted">Incoming revokes &amp; message edits are preserved here automatically.</div></div>';
     return;
   }
   el.innerHTML = rows.map(r => {
+    rememberMsgMeta(r);
     const badge = r.is_deleted && r.is_edited ? '<span class="badge deleted">Deleted &amp; Edited</span>'
       : (r.is_deleted ? `<span class="badge deleted">Deleted ${esc(r.deleted_at)}</span>` : `<span class="badge edited">Edited ${esc(r.edited_at)}</span>`);
     const revs = (r.revisions || []).map(rv => `<div>&bull; <b>${esc(rv.event)}</b> (${esc(rv.timestamp)}) by ${esc(rv.actor)}: ${esc(rv.previous_text || '[Empty]')} &rarr; ${esc(rv.new_text || '[Deleted]')}</div>`).join('');
@@ -2080,6 +2602,7 @@ async function loadVault() {
         ${r.is_edited && r.current_text ? `<div class="msg-body" style="margin-top:8px"><strong>Latest Text:</strong> ${esc(r.current_text)}</div>` : ''}
         ${revs ? `<div class="muted" style="margin-top:8px;font-size:0.79rem">${revs}</div>` : ''}
         ${r.media_saved_on_disk ? `<div class="media-bar"><a class="ghost-btn" href="${mediaUrl(r.id, true)}">Saved Media (${esc(r.media_filename || r.media_type)})</a><button class="ghost-btn" onclick="openItemModal(${escArg(r.id)},${escArg(r.media_filename || r.media_type)},${escArg(r.media_type)})">Inspect</button></div>` : ''}
+        ${renderMsgActions(r.id)}
       </div>
     `;
   }).join('');
@@ -2088,10 +2611,12 @@ document.getElementById('vaultRefreshBtn').addEventListener('click', loadVault);
 document.getElementById('vaultMode').addEventListener('change', loadVault);
 document.getElementById('vaultScope').addEventListener('change', loadVault);
 document.getElementById('vaultQuery').addEventListener('keydown', e => { if (e.key === 'Enter') loadVault(); });
+setupDateGroup('vault', 'vaultFrom', 'vaultTo', loadVault);
 document.getElementById('vaultClearBtn').addEventListener('click', () => {
   document.getElementById('vaultMode').value = 'all';
   document.getElementById('vaultQuery').value = '';
   document.getElementById('vaultScope').value = 'all';
+  resetDateGroup('vault', 'vaultFrom', 'vaultTo');
   loadVault();
 });
 
@@ -2123,7 +2648,9 @@ function openItemModal(id, title, kind) {
   else if (kind === 'video') body = `<video controls autoplay playsinline poster="${videoThumbUrl(id)}" src="${u}" style="width:100%;max-width:100%;max-height:60vh;border-radius:10px;background:#000"></video>`;
   else if (kind === 'audio' || kind === 'voice_note') body = `<audio controls autoplay src="${u}" style="width:100%;margin:12px 0"></audio>`;
   else body = `<iframe src="${u}" style="width:100%;height:60vh;border:none;background:#fff;border-radius:10px"></iframe>`;
-  document.getElementById('modalBody').innerHTML = `${body}<div class="media-bar"><a class="ghost-btn" href="${dl}">Download Original</a></div>`;
+  const askBtnHtml = WAMATE_CAPS.hasAi ? `<button type="button" class="action-pill ai-pill" onclick="askAiAboutMessage(${escArg(id)})">${_AI_BTN_SVG}<span>Ask AI</span></button>` : '';
+  const waBtnHtml = WAMATE_CAPS.hasWa ? `<button type="button" class="action-pill wa-pill" onclick="sendToWhatsApp(${escArg(id)}, this)">${_WA_BTN_SVG}<span>Send to WA</span></button>` : '';
+  document.getElementById('modalBody').innerHTML = `${body}<div class="media-bar"><a class="ghost-btn" href="${dl}">Download Original</a>${askBtnHtml}${waBtnHtml}</div>`;
   dlg.showModal();
 }
 
@@ -2135,10 +2662,14 @@ async function openDocModal(id, title) {
   try {
     const res = await apiGet(`/api/doc_preview/${encodeURIComponent(id)}`);
     const text = res.preview || res.ocr_cached || 'No extractable text available.';
+    const askBtnHtml = WAMATE_CAPS.hasAi ? `<button type="button" class="action-pill ai-pill" onclick="askAiAboutMessage(${escArg(id)})">${_AI_BTN_SVG}<span>Ask AI</span></button>` : '';
+    const waBtnHtml = WAMATE_CAPS.hasWa ? `<button type="button" class="action-pill wa-pill" onclick="sendToWhatsApp(${escArg(id)}, this)">${_WA_BTN_SVG}<span>Send to WA</span></button>` : '';
     document.getElementById('modalBody').innerHTML = `
       <div class="media-bar" style="margin-bottom:10px">
         <a class="ghost-btn" href="${mediaUrl(id)}" target="_blank">Open Raw File</a>
         <a class="ghost-btn" href="${mediaUrl(id, true)}">Download</a>
+        ${askBtnHtml}
+        ${waBtnHtml}
       </div>
       <pre>${esc(text)}</pre>
     `;
@@ -2326,9 +2857,10 @@ function renderAskThread(isThinking=false) {
   const cards = _aiHistory.map(item => {
     if (item.role === 'user') {
       const scopeTag = item.chat ? `<span class="filter-chip" style="padding:1px 7px;font-size:0.68rem">Scope: ${esc(item.chat)}</span>` : '';
+      const ctxTag = item.contextLabel ? `<span class="filter-chip" style="padding:1px 7px;font-size:0.68rem;border-color:rgba(56,189,248,0.34);background:rgba(56,189,248,0.12);color:#bae6fd">Item: ${esc(item.contextLabel)}</span>` : '';
       return `
         <div class="ai-turn-user">
-          <div class="ai-turn-user-meta">${scopeTag}<span>You &middot; ${esc(item.ts)}</span></div>
+          <div class="ai-turn-user-meta">${scopeTag}${ctxTag}<span>You &middot; ${esc(item.ts)}</span></div>
           <div class="ai-turn-user-text">${esc(item.text)}</div>
         </div>
       `;
@@ -2363,21 +2895,70 @@ function renderAskThread(isThinking=false) {
   out.scrollTop = out.scrollHeight;
 }
 
+async function loadAskHistory() {
+  if (!WAMATE_CAPS.hasAi) return;
+  try {
+    const rows = await apiGet('/api/ask/history?limit=80');
+    if (!Array.isArray(rows) || !rows.length) return;
+    _aiHistory = [];
+    window._aiAnswers = {};
+    rows.forEach(r => {
+      if (r.role === 'user') {
+        _aiHistory.push({
+          role: 'user',
+          text: r.text || '',
+          chat: r.chat || '',
+          contextLabel: r.context_label || '',
+          ts: r.ts || ''
+        });
+      } else {
+        const turnId = ++_aiTurnSeq;
+        window._aiAnswers[turnId] = r.text || '';
+        _aiHistory.push({
+          role: 'bot',
+          id: turnId,
+          text: r.text || '',
+          latencyMs: r.latency_ms || 0,
+          isError: !!r.is_error
+        });
+      }
+    });
+    renderAskThread(false);
+    const st = document.getElementById('askStatus');
+    if (st) st.innerHTML = `<span class="live-dot"></span> Restored ${rows.length} saved turn${rows.length === 1 ? '' : 's'} &middot; Ready`;
+  } catch (_) {}
+}
+
 const askBtn = document.getElementById('askBtn');
 if (askBtn) {
   let _thinkTimer = null;
   renderAskThread(false);
+
+  document.getElementById('askItemClearBtn')?.addEventListener('click', () => {
+    setAskItemContext(null);
+    const inp = document.getElementById('askInput');
+    if (inp) inp.placeholder = 'Ask anything about your WhatsApp messages, invoices, PDFs, voice notes, or deleted texts...';
+  });
 
   window.submitAsk = async () => {
     const inp = document.getElementById('askInput');
     const q = inp.value.trim();
     if (!q || askBtn.disabled) return;
     const chatFocus = (document.getElementById('askChatFocus')?.value || '').trim();
+    const ctxSnap = _askContext ? { ..._askContext } : null;
     const st = document.getElementById('askStatus');
 
     const nowTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-    _aiHistory.push({ role: 'user', text: q, chat: chatFocus, ts: nowTime });
+    _aiHistory.push({
+      role: 'user',
+      text: q,
+      chat: chatFocus,
+      contextLabel: ctxSnap ? ctxSnap.label : '',
+      ts: nowTime
+    });
     inp.value = '';
+    setAskItemContext(null);
+    inp.placeholder = 'Ask anything about your WhatsApp messages, invoices, PDFs, voice notes, or deleted texts...';
     autoGrowAskInput();
 
     askBtn.disabled = true;
@@ -2391,7 +2972,9 @@ if (askBtn) {
     }, 200);
 
     try {
-      const payload = chatFocus ? { query: q, chat: chatFocus } : { query: q };
+      const payload = { query: q };
+      if (chatFocus) payload.chat = chatFocus;
+      if (ctxSnap && ctxSnap.id) payload.context_msg_id = ctxSnap.id;
       const res = await fetch('/api/ask', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -2436,6 +3019,7 @@ if (askBtn) {
   document.getElementById('askClearBtn')?.addEventListener('click', async () => {
     _aiHistory = [];
     window._aiAnswers = {};
+    setAskItemContext(null);
     renderAskThread(false);
     document.getElementById('askStatus').innerHTML = '<span class="live-dot"></span> New conversation &middot; Memory reset';
     try {
@@ -2448,6 +3032,7 @@ if (askBtn) {
 
 loadStats();
 loadChatSuggestions('');
+loadAskHistory();
 runSearch(true);
 </script>
 </body>
@@ -2455,11 +3040,18 @@ runSearch(true);
 """
 
 
-def _build_html_page(has_ai: bool) -> str:
+def _build_html_page(has_ai: bool, has_wa: bool = False, has_auth: bool = False) -> str:
     """Return the self-contained WAmate Web Search & Media Browser UI."""
+    caps_js = (
+        "const WAMATE_CAPS = "
+        + json.dumps({"hasAi": bool(has_ai), "hasWa": bool(has_wa), "hasAuth": bool(has_auth)})
+        + ";"
+    )
     return (
         _HTML_TEMPLATE.replace("__AI_TAB_BTN__", _AI_TAB_BTN if has_ai else "")
         .replace("__AI_PANEL_HTML__", _AI_PANEL_HTML if has_ai else "")
+        .replace("__LOGOUT_BTN__", _LOGOUT_BTN_HTML if has_auth else "")
+        .replace("__WAMATE_CAPS_JS__", caps_js)
     )
 
 
@@ -2487,6 +3079,7 @@ class WebUIServer:
         self._thumb_sem = threading.Semaphore(2)
         self._thumb_locks_guard = threading.Lock()
         self._thumb_locks: dict[str, threading.Lock] = {}
+        self._session_secret = secrets.token_bytes(32)
         self._server: ThreadingHTTPServer | None = None
         self._thread: threading.Thread | None = None
 
@@ -2494,6 +3087,24 @@ class WebUIServer:
     def is_running(self) -> bool:
         """Return True while the HTTP server socket is actively bound and serving."""
         return self._server is not None
+
+    def _create_session_token(self, ttl_sec: int = _SESSION_TTL_SEC) -> str:
+        """Create an HMAC-SHA256 signed session cookie token."""
+        exp = int(time.time()) + max(60, ttl_sec)
+        sig = hmac.new(self._session_secret, str(exp).encode("ascii"), hashlib.sha256).hexdigest()
+        return f"{exp}.{sig}"
+
+    def _verify_session_token(self, token: str) -> bool:
+        """Validate HMAC signature and expiration of a session cookie token."""
+        if not token or "." not in token:
+            return False
+        exp_str, _, sig = token.partition(".")
+        if not exp_str.isdigit() or not sig:
+            return False
+        if int(exp_str) <= int(time.time()):
+            return False
+        expected = hmac.new(self._session_secret, exp_str.encode("ascii"), hashlib.sha256).hexdigest()
+        return hmac.compare_digest(expected, sig)
 
     @staticmethod
     def _extract_video_frame_ffmpeg(ffmpeg_bin: str, video_path: Path, out_path: Path) -> bool:
@@ -2603,22 +3214,53 @@ class WebUIServer:
                 self.end_headers()
                 self.wfile.write(body)
 
-            def _send_json(self, data: Any, status: int = 200) -> None:
+            def _send_json(
+                self, data: Any, status: int = 200, extra_headers: dict[str, str] | None = None
+            ) -> None:
                 payload = json.dumps(data, ensure_ascii=False).encode("utf-8")
-                self._send_bytes(status, "application/json; charset=utf-8", payload)
+                self._send_bytes(
+                    status,
+                    "application/json; charset=utf-8",
+                    payload,
+                    extra_headers=extra_headers,
+                )
 
-            def _check_auth(self) -> bool:
+            def _has_valid_basic_auth(self) -> bool:
+                auth = self.headers.get("Authorization", "")
+                if not auth.startswith("Basic "):
+                    return False
+                try:
+                    decoded = base64.b64decode(auth[6:].strip()).decode("utf-8", errors="ignore")
+                    _, _, supplied_pw = decoded.partition(":")
+                    return hmac.compare_digest(supplied_pw, parent.password)
+                except Exception:
+                    return False
+
+            def _has_valid_session_cookie(self) -> bool:
+                raw_cookie = self.headers.get("Cookie", "")
+                if not raw_cookie:
+                    return False
+                try:
+                    jar = cookies.SimpleCookie()
+                    jar.load(raw_cookie)
+                    morsel = jar.get(_SESSION_COOKIE_NAME)
+                    return bool(morsel and parent._verify_session_token(morsel.value))
+                except Exception:
+                    return False
+
+            def _check_auth(self, allow_login_page: bool = False) -> bool:
                 if not parent.password:
                     return True
-                auth = self.headers.get("Authorization", "")
-                if auth.startswith("Basic "):
-                    try:
-                        decoded = base64.b64decode(auth[6:].strip()).decode("utf-8", errors="ignore")
-                        _, _, supplied_pw = decoded.partition(":")
-                        if hmac.compare_digest(supplied_pw, parent.password):
-                            return True
-                    except Exception:
-                        pass
+                if self._has_valid_basic_auth() or self._has_valid_session_cookie():
+                    return True
+                if allow_login_page:
+                    self._send_bytes(
+                        HTTPStatus.OK,
+                        "text/html; charset=utf-8",
+                        _build_login_page().encode("utf-8"),
+                        extra_headers={"Cache-Control": "no-store"},
+                    )
+                    return False
                 self._send_bytes(
                     HTTPStatus.UNAUTHORIZED,
                     "text/plain; charset=utf-8",
@@ -2697,16 +3339,20 @@ class WebUIServer:
                             remaining -= len(chunk)
 
             def do_GET(self) -> None:
-                if not self._check_auth():
-                    return
-
                 parsed = urllib.parse.urlparse(self.path)
                 path = parsed.path
                 qs = urllib.parse.parse_qs(parsed.query)
 
+                if not self._check_auth(allow_login_page=(path in ("/", "/index.html"))):
+                    return
+
                 try:
                     if path == "/" or path == "/index.html":
-                        html = _build_html_page(has_ai=parent.gemini is not None).encode("utf-8")
+                        html = _build_html_page(
+                            has_ai=parent.gemini is not None,
+                            has_wa=parent.bot_client is not None,
+                            has_auth=bool(parent.password),
+                        ).encode("utf-8")
                         self._send_bytes(200, "text/html; charset=utf-8", html)
                         return
 
@@ -2724,9 +3370,15 @@ class WebUIServer:
                                 pass
                         stats["stored_mb"] = stored_mb
                         stats["gemini_available"] = parent.gemini is not None
+                        stats["whatsapp_connected"] = parent.bot_client is not None
                         stats["model_name"] = Config.GEMINI_MODEL
                         stats["api_keys_count"] = len(Config.GEMINI_API_KEYS)
                         self._send_json(stats)
+                        return
+
+                    if path == "/api/ask/history":
+                        limit = _clamp_int(qs.get("limit", ["80"])[0], 80, 1, 200)
+                        self._send_json(parent.db.get_web_ai_history(limit=limit))
                         return
 
                     if path == "/api/chats":
@@ -2761,6 +3413,8 @@ class WebUIServer:
                         scope = (qs.get("scope", ["all"])[0] or "all").strip()
                         media_type = (qs.get("media_type", ["all"])[0] or "all").strip()
                         statuses = _bool_param(qs.get("statuses", ["0"])[0])
+                        date_from = _parse_date_param(qs.get("from", [""])[0], end_of_day=False)
+                        date_to = _parse_date_param(qs.get("to", [""])[0], end_of_day=True)
                         limit = _clamp_int(qs.get("limit", ["50"])[0], 50, 1, 200)
                         offset = _clamp_int(qs.get("offset", ["0"])[0], 0, 0, 50000)
                         self._send_json(
@@ -2770,6 +3424,8 @@ class WebUIServer:
                                 chat_scope=scope,
                                 media_type=media_type,
                                 include_statuses=statuses,
+                                date_from=date_from,
+                                date_to=date_to,
                                 limit=limit,
                                 offset=offset,
                             )
@@ -2782,6 +3438,8 @@ class WebUIServer:
                         chat = (qs.get("chat", [""])[0] or "").strip()
                         scope = (qs.get("scope", ["all"])[0] or "all").strip()
                         statuses = _bool_param(qs.get("statuses", ["1"])[0])
+                        date_from = _parse_date_param(qs.get("from", [""])[0], end_of_day=False)
+                        date_to = _parse_date_param(qs.get("to", [""])[0], end_of_day=True)
                         limit = _clamp_int(qs.get("limit", ["60"])[0], 60, 1, 200)
                         offset = _clamp_int(qs.get("offset", ["0"])[0], 0, 0, 50000)
                         self._send_json(
@@ -2791,6 +3449,8 @@ class WebUIServer:
                                 chat=chat,
                                 chat_scope=scope,
                                 include_statuses=statuses,
+                                date_from=date_from,
+                                date_to=date_to,
                                 limit=limit,
                                 offset=offset,
                             )
@@ -2801,10 +3461,17 @@ class WebUIServer:
                         mode = (qs.get("mode", ["all"])[0] or "all").strip()
                         q = (qs.get("q", [""])[0] or "").strip()
                         scope = (qs.get("scope", ["all"])[0] or "all").strip()
+                        date_from = _parse_date_param(qs.get("from", [""])[0], end_of_day=False)
+                        date_to = _parse_date_param(qs.get("to", [""])[0], end_of_day=True)
                         limit = _clamp_int(qs.get("limit", ["50"])[0], 50, 1, 200)
                         self._send_json(
                             parent.db.find_deleted_or_edited_messages(
-                                mode=mode, chat_name_or_jid=q, chat_scope=scope, limit=limit
+                                mode=mode,
+                                chat_name_or_jid=q,
+                                chat_scope=scope,
+                                date_from=date_from,
+                                date_to=date_to,
+                                limit=limit,
                             )
                         )
                         return
@@ -2858,45 +3525,120 @@ class WebUIServer:
                     logger.exception("WebUI GET error on %s: %s", path, exc)
                     self._send_json({"error": str(exc)}, status=500)
 
+            def _read_json_body(self, max_bytes: int = 16384) -> dict[str, Any] | None:
+                try:
+                    raw_len = int(self.headers.get("Content-Length", "0") or "0")
+                except ValueError:
+                    raw_len = 0
+                if raw_len <= 0 or raw_len > max_bytes:
+                    return None
+                try:
+                    data = json.loads(self.rfile.read(raw_len).decode("utf-8"))
+                    return data if isinstance(data, dict) else None
+                except Exception:
+                    return None
+
+            def _drain_body(self) -> None:
+                try:
+                    raw_len = int(self.headers.get("Content-Length", "0") or "0")
+                except ValueError:
+                    raw_len = 0
+                if 0 < raw_len <= 16384:
+                    try:
+                        self.rfile.read(raw_len)
+                    except Exception:
+                        pass
+
             def do_POST(self) -> None:
+                parsed = urllib.parse.urlparse(self.path)
+                path = parsed.path
+
+                if path == "/api/login":
+                    payload = self._read_json_body(max_bytes=4096)
+                    if payload is None:
+                        self._send_json({"error": "Invalid JSON body"}, status=400)
+                        return
+                    supplied = str(payload.get("password") or "")
+                    if not parent.password or hmac.compare_digest(supplied, parent.password):
+                        cookie_val = parent._create_session_token() if parent.password else ""
+                        headers = (
+                            {
+                                "Set-Cookie": (
+                                    f"{_SESSION_COOKIE_NAME}={cookie_val}; Path=/; "
+                                    f"HttpOnly; SameSite=Lax; Max-Age={_SESSION_TTL_SEC}"
+                                )
+                            }
+                            if cookie_val
+                            else None
+                        )
+                        self._send_json({"ok": True}, extra_headers=headers)
+                        return
+                    self._send_json({"error": "Invalid password"}, status=401)
+                    return
+
+                if path == "/api/logout":
+                    self._drain_body()
+                    self._send_json(
+                        {"ok": True},
+                        extra_headers={
+                            "Set-Cookie": f"{_SESSION_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0"
+                        },
+                    )
+                    return
+
                 if not self._check_auth():
                     return
-                parsed = urllib.parse.urlparse(self.path)
-                if parsed.path not in ("/api/ask", "/api/ask/clear"):
+
+                if path == "/api/send_to_whatsapp":
+                    if not parent.bot_client or not hasattr(parent.bot_client, "send_media_by_id_to_self"):
+                        self._send_json({"error": "WhatsApp client is not connected in this mode."}, status=503)
+                        return
+                    payload = self._read_json_body(max_bytes=4096)
+                    if payload is None:
+                        self._send_json({"error": "Invalid JSON body"}, status=400)
+                        return
+                    msg_id = str(payload.get("msg_id") or "").strip()
+                    if not msg_id:
+                        self._send_json({"error": "msg_id is required"}, status=400)
+                        return
+                    try:
+                        ok, detail = parent.bot_client.send_media_by_id_to_self(msg_id)
+                        if ok:
+                            self._send_json({"ok": True, "detail": detail})
+                        else:
+                            status_code = 404 if "not found" in detail.lower() else 500
+                            self._send_json({"ok": False, "error": detail}, status=status_code)
+                    except Exception as exc:
+                        logger.exception("WebUI /api/send_to_whatsapp error: %s", exc)
+                        self._send_json({"ok": False, "error": str(exc)}, status=500)
+                    return
+
+                if path not in ("/api/ask", "/api/ask/clear"):
                     self._send_json({"error": "Not found"}, status=404)
                     return
                 if not parent.gemini:
                     self._send_json({"error": "Gemini AI agent is not active on this Web UI instance."}, status=503)
                     return
 
-                try:
-                    raw_len = int(self.headers.get("Content-Length", "0") or "0")
-                except ValueError:
-                    raw_len = 0
-
-                if parsed.path == "/api/ask/clear":
-                    if 0 < raw_len <= 16384:
-                        try:
-                            self.rfile.read(raw_len)
-                        except Exception:
-                            pass
+                if path == "/api/ask/clear":
+                    self._drain_body()
                     cleared = 0
                     if hasattr(parent.gemini, "clear_history"):
                         try:
                             cleared = int(parent.gemini.clear_history() or 0)
                         except Exception as exc:
                             logger.debug("WebUI /api/ask/clear warning: %s", exc)
-                    self._send_json({"cleared": cleared})
+                    db_cleared = 0
+                    try:
+                        db_cleared = parent.db.clear_web_ai_history()
+                    except Exception as exc:
+                        logger.debug("WebUI db AI clear warning: %s", exc)
+                    self._send_json({"cleared": cleared, "db_cleared": db_cleared})
                     return
 
-                if raw_len <= 0 or raw_len > 16384:
-                    self._send_json({"error": "Invalid request payload size"}, status=400)
-                    return
-
-                try:
-                    payload = json.loads(self.rfile.read(raw_len).decode("utf-8"))
-                except Exception:
-                    self._send_json({"error": "Invalid JSON body"}, status=400)
+                payload = self._read_json_body(max_bytes=16384)
+                if payload is None:
+                    self._send_json({"error": "Invalid JSON body or size"}, status=400)
                     return
 
                 query = (payload.get("query") or "").strip()
@@ -2905,11 +3647,50 @@ class WebUIServer:
                     return
 
                 chat_focus = (payload.get("chat") or "").strip()
-                effective_query = (
-                    f"[Focus chat scope: prioritize searching conversation/contact '{chat_focus}']\n{query}"
-                    if chat_focus
-                    else query
-                )
+                context_msg_id = (payload.get("context_msg_id") or "").strip()
+                context_label = ""
+                prefixes: list[str] = []
+                if chat_focus:
+                    prefixes.append(f"[Focus chat scope: prioritize searching conversation/contact '{chat_focus}']")
+
+                if context_msg_id:
+                    ctx = parent.db.get_message_context_by_id(context_msg_id)
+                    if ctx:
+                        who = ctx.get("sender") or ctx.get("chat_name") or "Unknown"
+                        when = ctx.get("timestamp_str") or ""
+                        context_label = f"{who} ({when})" if when else who
+                        ctx_lines = [f"[Attached Message Context (msg_id={context_msg_id})]"]
+                        ctx_lines.append(
+                            f"Chat: {ctx.get('chat_name', '')} ({ctx.get('chat_phone') or ctx.get('chat_jid', '')})"
+                        )
+                        ctx_lines.append(f"Sender: {who} at {when}")
+                        ctx_lines.append(f"Type: {ctx.get('media_type', 'text')}")
+                        if ctx.get("media_filename"):
+                            ctx_lines.append(f"Filename: {ctx['media_filename']}")
+                        if ctx.get("text"):
+                            ctx_lines.append(f"Text/Caption: {str(ctx['text'])[:1500]}")
+                        if ctx.get("original_text") and ctx.get("original_text") != ctx.get("text"):
+                            ctx_lines.append(f"Preserved Original: {str(ctx['original_text'])[:1500]}")
+                        if ctx.get("ocr_cached"):
+                            ctx_lines.append(f"Cached OCR/Transcript: {str(ctx['ocr_cached'])[:2500]}")
+                        if ctx.get("has_local_media"):
+                            ctx_lines.append(
+                                "Note: Local media/document file is saved on disk; call analyze_media or search tools if full file inspection is needed."
+                            )
+                        prefixes.append("\n".join(ctx_lines))
+
+                effective_query = ("\n\n".join(prefixes) + f"\n{query}") if prefixes else query
+
+                try:
+                    parent.db.append_web_ai_turn(
+                        role="user",
+                        content=query,
+                        chat_focus=chat_focus,
+                        context_msg_id=context_msg_id,
+                        context_label=context_label,
+                    )
+                except Exception as exc:
+                    logger.debug("Failed to record web AI user turn: %s", exc)
 
                 if parent.bot_client and hasattr(parent.bot_client, "_begin_query"):
                     parent.bot_client._begin_query()
@@ -2917,9 +3698,34 @@ class WebUIServer:
                 try:
                     answer = parent.gemini.ask(effective_query)
                     latency_ms = int((time.monotonic() - t0) * 1000)
-                    self._send_json({"answer": answer, "latency_ms": latency_ms})
+                    try:
+                        parent.db.append_web_ai_turn(
+                            role="bot",
+                            content=answer,
+                            chat_focus=chat_focus,
+                            context_msg_id=context_msg_id,
+                            context_label=context_label,
+                            latency_ms=latency_ms,
+                            is_error=False,
+                        )
+                    except Exception as exc:
+                        logger.debug("Failed to record web AI bot turn: %s", exc)
+                    self._send_json(
+                        {"answer": answer, "latency_ms": latency_ms, "context_label": context_label}
+                    )
                 except Exception as exc:
                     logger.exception("WebUI /api/ask error: %s", exc)
+                    try:
+                        parent.db.append_web_ai_turn(
+                            role="bot",
+                            content=str(exc),
+                            chat_focus=chat_focus,
+                            context_msg_id=context_msg_id,
+                            context_label=context_label,
+                            is_error=True,
+                        )
+                    except Exception:
+                        pass
                     self._send_json({"error": str(exc)}, status=500)
                 finally:
                     if parent.bot_client and hasattr(parent.bot_client, "_end_query"):

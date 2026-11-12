@@ -215,6 +215,23 @@ class DatabaseManager:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_revisions_msg_id ON message_revisions(msg_id);")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_revisions_event_ts ON message_revisions(event_ts DESC);")
 
+            # 7. Persistent Web UI AI Conversation History
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS web_ai_history (
+                    turn_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    role TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    chat_focus TEXT DEFAULT '',
+                    context_msg_id TEXT DEFAULT '',
+                    context_label TEXT DEFAULT '',
+                    latency_ms INTEGER DEFAULT 0,
+                    is_error INTEGER DEFAULT 0,
+                    created_at INTEGER NOT NULL
+                );
+                """
+            )
+
             conn.commit()
             logger.info("Database initialized successfully at %s", self.db_path)
 
@@ -1097,6 +1114,8 @@ class DatabaseManager:
         chat_name_or_jid: str = "",
         chat_scope: str = "all",
         limit: int = 20,
+        date_from: int = 0,
+        date_to: int = 0,
     ) -> list[dict[str, Any]]:
         """Retrieve deleted and/or edited messages preserved by the Anti-Delete & Edit Vault."""
         norm_mode = (mode or "all").strip().lower()
@@ -1112,6 +1131,10 @@ class DatabaseManager:
                 conn, chat_filter=chat_name_or_jid, chat_scope=chat_scope, alias="m", include_sender=True
             )
             conditions.extend(chat_conds)
+            ts_expr = "MAX(COALESCE(m.deleted_at, 0), COALESCE(m.edited_at, 0), COALESCE(m.timestamp, 0))"
+            dt_conds, dt_params = self._build_date_range_conditions(date_from, date_to, ts_expr=ts_expr)
+            conditions.extend(dt_conds)
+            params.extend(dt_params)
 
             where_sql = " AND ".join(conditions)
             sql = f"""
@@ -2098,6 +2121,21 @@ class DatabaseManager:
         }
 
     @staticmethod
+    def _build_date_range_conditions(
+        date_from: int = 0, date_to: int = 0, ts_expr: str = "m.timestamp"
+    ) -> tuple[list[str], list[Any]]:
+        """Build SQL timestamp range clauses for inclusive unix second bounds."""
+        conds: list[str] = []
+        params: list[Any] = []
+        if date_from and int(date_from) > 0:
+            conds.append(f"{ts_expr} >= ?")
+            params.append(int(date_from))
+        if date_to and int(date_to) > 0:
+            conds.append(f"{ts_expr} <= ?")
+            params.append(int(date_to))
+        return conds, params
+
+    @staticmethod
     def _build_media_type_clause(media_type: str, alias: str = "m") -> tuple[str, list[Any]]:
         """Build SQL filter clause and params for Web UI media type filter tabs."""
         mt = (media_type or "").strip().lower()
@@ -2232,8 +2270,10 @@ class DatabaseManager:
         include_statuses: bool = False,
         limit: int = 60,
         offset: int = 0,
+        date_from: int = 0,
+        date_to: int = 0,
     ) -> list[dict[str, Any]]:
-        """Rich search endpoint for the Web UI combining FTS5/LIKE text search with chat/phone, scope & media filters."""
+        """Rich search endpoint for the Web UI combining FTS5/LIKE text search with chat/phone, scope, date & media filters."""
         cols_sql = """
         SELECT m.id, m.chat_jid, m.chat_name, m.sender_jid, m.sender_name, m.text, m.original_text,
                m.timestamp, m.is_from_me, m.is_group, m.media_type, m.media_filename, m.media_mimetype,
@@ -2250,6 +2290,10 @@ class DatabaseManager:
                 conn, chat_filter=chat_jid, chat_scope=chat_scope, alias="m", include_sender=True
             )
             base_conditions.extend(chat_conds)
+
+            dt_conds, dt_params = self._build_date_range_conditions(date_from, date_to, ts_expr="m.timestamp")
+            base_conditions.extend(dt_conds)
+            base_params.extend(dt_params)
 
             mt_sql, mt_params = self._build_media_type_clause(media_type, alias="m")
             if mt_sql:
@@ -2314,8 +2358,10 @@ class DatabaseManager:
         include_statuses: bool = True,
         limit: int = 60,
         offset: int = 0,
+        date_from: int = 0,
+        date_to: int = 0,
     ) -> list[dict[str, Any]]:
-        """List media files stored locally on disk with chat/phone, scope, type, and keyword filters."""
+        """List media files stored locally on disk with chat/phone, scope, type, date, and keyword filters."""
         conditions = ["m.local_path IS NOT NULL", "m.local_path NOT LIKE '[%'"]
         params: list[Any] = []
         mf = (media_filter or "all").strip().lower()
@@ -2328,6 +2374,10 @@ class DatabaseManager:
             if mt_sql:
                 conditions.append(mt_sql)
                 params.extend(mt_params)
+
+        dt_conds, dt_params = self._build_date_range_conditions(date_from, date_to, ts_expr="m.timestamp")
+        conditions.extend(dt_conds)
+        params.extend(dt_params)
 
         if query and query.strip():
             like_q = f"%{query.strip().lower()}%"
@@ -2390,13 +2440,14 @@ class DatabaseManager:
         return suggestions
 
     def get_message_media_info(self, msg_id: str) -> dict[str, Any] | None:
-        """Retrieve local file path and metadata for serving a stored media attachment safely by msg_id."""
+        """Retrieve local file path and metadata for serving or forwarding a stored attachment by msg_id."""
         if not msg_id:
             return None
         with self._get_connection() as conn:
             row = conn.execute(
                 """
-                SELECT m.id, m.local_path, m.media_filename, m.media_mimetype, m.media_type,
+                SELECT m.id, m.chat_jid, m.chat_name, m.sender_name, m.is_from_me, m.timestamp,
+                       m.local_path, m.media_filename, m.media_mimetype, m.media_type,
                        m.text, c.ocr_text AS ocr_cached
                 FROM messages m
                 LEFT JOIN media_ocr_cache c ON m.id = c.msg_id
@@ -2405,3 +2456,91 @@ class DatabaseManager:
                 (msg_id,),
             ).fetchone()
             return dict(row) if row else None
+
+    def get_message_context_by_id(self, msg_id: str) -> dict[str, Any] | None:
+        """Retrieve formatted message metadata + OCR cache snippet by msg_id for Web UI Ask AI anchoring."""
+        if not msg_id:
+            return None
+        with self._get_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT m.id, m.chat_jid, m.chat_name, m.sender_jid, m.sender_name, m.text, m.original_text,
+                       m.timestamp, m.is_from_me, m.is_group, m.media_type, m.media_filename, m.media_mimetype,
+                       m.media_size, m.local_path, m.is_deleted, m.deleted_at, m.deleted_by, m.is_edited, m.edited_at,
+                       c.ocr_text AS ocr_cached
+                FROM messages m
+                LEFT JOIN media_ocr_cache c ON m.id = c.msg_id
+                WHERE m.id = ?
+                """,
+                (msg_id,),
+            ).fetchone()
+            return self._format_web_message_row(row) if row else None
+
+    def append_web_ai_turn(
+        self,
+        role: str,
+        content: str,
+        chat_focus: str = "",
+        context_msg_id: str = "",
+        context_label: str = "",
+        latency_ms: int = 0,
+        is_error: bool = False,
+        created_at: int | None = None,
+    ) -> int:
+        """Persist one user or assistant message in web_ai_history and return its turn_id."""
+        ts = int(created_at or time.time())
+        with self._get_connection() as conn:
+            cur = conn.execute(
+                """
+                INSERT INTO web_ai_history
+                (role, content, chat_focus, context_msg_id, context_label, latency_ms, is_error, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    (role or "user")[:16],
+                    content or "",
+                    (chat_focus or "")[:200],
+                    (context_msg_id or "")[:120],
+                    (context_label or "")[:240],
+                    int(latency_ms or 0),
+                    1 if is_error else 0,
+                    ts,
+                ),
+            )
+            conn.commit()
+            return int(cur.lastrowid or 0)
+
+    def get_web_ai_history(self, limit: int = 80) -> list[dict[str, Any]]:
+        """Load persisted Web UI AI conversation turns in chronological order."""
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT turn_id, role, content, chat_focus, context_msg_id, context_label,
+                       latency_ms, is_error, created_at
+                FROM web_ai_history
+                ORDER BY turn_id DESC
+                LIMIT ?
+                """,
+                (max(1, int(limit)),),
+            ).fetchall()
+            out: list[dict[str, Any]] = []
+            for r in reversed(rows):
+                out.append({
+                    "id": int(r["turn_id"]),
+                    "role": r["role"],
+                    "text": r["content"] or "",
+                    "chat": r["chat_focus"] or "",
+                    "context_msg_id": r["context_msg_id"] or "",
+                    "context_label": r["context_label"] or "",
+                    "latency_ms": int(r["latency_ms"] or 0),
+                    "is_error": bool(r["is_error"]),
+                    "ts": datetime.fromtimestamp(int(r["created_at"] or 0)).strftime("%I:%M %p"),
+                })
+            return out
+
+    def clear_web_ai_history(self) -> int:
+        """Delete all persisted Web UI AI conversation turns and return count removed."""
+        with self._get_connection() as conn:
+            cur = conn.execute("DELETE FROM web_ai_history")
+            conn.commit()
+            return int(cur.rowcount or 0)
