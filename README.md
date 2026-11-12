@@ -1,17 +1,21 @@
 <div align="center">
 
-# WAmate
+<a href="#why-wamate">
+  <img src="assets/banner.svg" alt="WAmate — WhatsApp Self-Chat AI Second Brain" width="100%" />
+</a>
 
-**Your private WhatsApp "Message yourself" AI Second Brain & Local Explorer.**  
-Index every message, photo, voice note, document, link, and deleted text locally in SQLite — query with Gemini AI or browse from a dark-mode Web UI.
+<br /><br />
 
-[![Python 3.12](https://img.shields.io/badge/Python-3.12-3776AB?style=flat-square&logo=python&logoColor=white)](https://python.org)
-[![Gemini AI](https://img.shields.io/badge/Gemini-Multimodal%20AI-1A73E8?style=flat-square&logo=google&logoColor=white)](https://aistudio.google.com/)
-[![WhatsApp](https://img.shields.io/badge/WhatsApp-Neonize-25D366?style=flat-square&logo=whatsapp&logoColor=white)](https://github.com/krypton-byte/neonize)
-[![SQLite FTS5](https://img.shields.io/badge/SQLite-FTS5%20Local-003B57?style=flat-square&logo=sqlite&logoColor=white)](https://sqlite.org/fts5.html)
-[![License: MIT](https://img.shields.io/badge/License-MIT-00c896?style=flat-square)](LICENSE)
+[![Python 3.12](https://img.shields.io/badge/Python-3.12-0c1720?style=for-the-badge&logo=python&logoColor=3776AB)](https://python.org)
+[![Gemini AI](https://img.shields.io/badge/Gemini-Multimodal-0c1720?style=for-the-badge&logo=google&logoColor=38bdf8)](https://aistudio.google.com/)
+[![WhatsApp](https://img.shields.io/badge/WhatsApp-Neonize-0c1720?style=for-the-badge&logo=whatsapp&logoColor=00e0a8)](https://github.com/krypton-byte/neonize)
+[![SQLite](https://img.shields.io/badge/SQLite-FTS5-0c1720?style=for-the-badge&logo=sqlite&logoColor=60a5fa)](https://sqlite.org/fts5.html)
+[![Docker](https://img.shields.io/badge/Docker-Ready-0c1720?style=for-the-badge&logo=docker&logoColor=2496ED)](#-docker)
+[![MIT License](https://img.shields.io/badge/License-MIT-0c1720?style=for-the-badge)](LICENSE)
 
-[Quick Start](#-quick-start) &middot; [Web UI](#-web-second-brain-ui) &middot; [Commands](#-commands) &middot; [Docker](#-docker) &middot; [Privacy](#-privacy--security)
+<br />
+
+**[Quick Start](#-quick-start)** &nbsp;&middot;&nbsp; **[Web UI](#-web-second-brain-ui)** &nbsp;&middot;&nbsp; **[Commands](#-commands)** &nbsp;&middot;&nbsp; **[Docker](#-docker)** &nbsp;&middot;&nbsp; **[Privacy](#-architecture--privacy)**
 
 </div>
 
@@ -19,53 +23,78 @@ Index every message, photo, voice note, document, link, and deleted text locally
 
 ## Why WAmate?
 
-WhatsApp search forgets context, expires media after ~30 days, hides deleted messages, and can't read inside PDFs, Excel sheets, receipts, or voice notes. **WAmate** turns your private **"Message yourself"** chat into a searchable, multimodal memory — without ever replying in anyone else's chat.
+WhatsApp search forgets context, expires files after ~30 days, hides deleted messages, and cannot read inside receipts, voice notes, or PDFs. **WAmate** turns your **"Message yourself"** chat into a local, searchable AI second brain — without ever messaging external chats.
 
-- **100% Self-Chat Isolated** — Only responds to commands from *you* in your own "Message yourself" chat (`!ask`, `!get`, `!vault`).
-- **Multimodal Gemini + Multi-Key Rotation** — Inspects images, receipts, voice notes, PDFs, Office docs (`.xlsx`, `.docx`, `.pptx`, `.csv`, `.zip`), and links on demand, caching transcripts & OCR in SQLite for instant zero-cost repeats. Auto-rotates `GEMINI_API_KEYS` on `429` limits.
-- **30-Day Media Vault + Zero-API Local Indexing** — Pre-downloads media locally with SHA-256 deduplication, extracts document text in pure Python (`ENABLE_LOCAL_DOC_INDEX`), and supports free local CPU OCR (`ENABLE_LOCAL_OCR` via `tesseract`).
-- **Anti-Delete & Edit Vault** — Captures real-time Delete-for-Everyone (`REVOKE`) and edits, preserving original wording, revision history, and saved media.
-- **Dark Web Second-Brain Explorer** — Local dashboard (`127.0.0.1:8765`) with full-text search, phone/chat & date-range filters, video thumbnails, persistent multi-turn **Ask AI**, one-click **Send to WA**, and password-protected session login.
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <h4>🔒 100% Self-Chat Isolated</h4>
+      <p>Triggers exclusively on your own messages in <b>"Message yourself"</b>. External DMs and groups stay strictly read-only.</p>
+    </td>
+    <td width="50%" valign="top">
+      <h4>⚡ Multimodal Gemini + Key Rotation</h4>
+      <p>Reads photos, receipts, voice notes, PDFs, Office docs, and shared URLs on demand — caching results in SQLite and auto-rotating <code>GEMINI_API_KEYS</code> on <code>429</code> limits.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <h4>💾 30-Day Media Vault &amp; Zero-API Index</h4>
+      <p>Auto-saves media locally with SHA-256 deduplication, indexes documents in Python (<code>ENABLE_LOCAL_DOC_INDEX</code>), and supports optional free CPU OCR via <code>tesseract</code>.</p>
+    </td>
+    <td width="50%" valign="top">
+      <h4>🛡️ Anti-Delete &amp; Edit Vault</h4>
+      <p>Captures real-time Delete-for-Everyone (<code>REVOKE</code>) events and message edits, preserving original wording, timelines, and downloaded media.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <h4>🌐 Dark Web Explorer UI</h4>
+      <p>Browse chats by phone/contact or date range, preview video thumbnails, trigger <b>Ask AI</b> on any item, or push files straight to WhatsApp with <b>Send to WA</b>.</p>
+    </td>
+    <td width="50%" valign="top">
+      <h4>↩️ Context Memory &amp; Swipe-Replies</h4>
+      <p>Follow-ups work naturally across turns. Swipe-reply to any photo, PDF, or voice note with <code>!ask</code> or <code>!get</code> to act on that exact item.</p>
+    </td>
+  </tr>
+</table>
 
 ---
 
 ## See It In Action
 
 ```text
-You:    !ask what did Alex say the Wi-Fi password and keyboard model were?
+You:    !ask what was the model of mechanical keyboard Alex shared yesterday?
 WAmate: ⏳
-        Alex shared the Keychron Q1 Pro in your DM yesterday and mentioned the office Wi-Fi is ... ✅
+        Alex shared the Keychron Q1 Pro (aluminum knob, hot-swappable) in your DM yesterday. ✅
 
 You:    !get Q3 financial summary pdf
 WAmate: 📄 Q3_Financial_Summary_2026.pdf (245 KB) ✅
 
 You:    !deleted Alex
-WAmate: 🛡️ 1. 🗑️ Deleted — Alex (14:22) • Original: "Wait, ignore that earlier quote..."
+WAmate: 🛡️ 1. 🗑️ Deleted — Alex (14:22) • Original: "Hold off on sending that invoice..."
 ```
-
-> **Tip:** Swipe-reply to *any* photo, PDF, voice note, or message in self-chat with `!ask <question>` or `!get` to act directly on it.
 
 ---
 
 ## 🌐 Web Second Brain UI
 
-Run WAmate normally (or standalone via `python3 main.py --web-only`) and open **`http://127.0.0.1:8765`**:
+Run WAmate (or launch standalone with `python3 main.py --web-only`) and open **`http://127.0.0.1:8765`**:
 
-- **Search & Media Vault** — FTS5 + cached OCR search across chats, phone numbers (`@lid` resolved), media types, and `From`/`To` date presets (`Today`, `7d`, `30d`), with inline video thumbnails and document text previews.
-- **Anti-Delete Vault** — Review deleted/edited messages and saved media (with WhatsApp Status spam filtered out by default).
-- **Direct Actions Everywhere** — Click **Ask AI** on any message/file to attach it as context, or **Send to WA** to push it straight back into your WhatsApp self-chat.
-- **Persistent AI Workspace** — Clean markdown chat with multi-turn SQLite history restored across refreshes.
+- **Search & Media Vault** — FTS5 + OCR search across messages and phone numbers (`@lid` resolved), `From`/`To` date presets (`Today`, `7d`, `30d`), video thumbnails, and document text previews.
+- **Anti-Delete Vault** — Clean view of deleted and edited messages (WhatsApp Status broadcasts filtered out by default).
+- **One-Click Actions** — Click **Ask AI** on any card, bubble, or preview modal to attach it as context, or **Send to WA** to deliver it directly to your self-chat.
+- **Persistent AI Workspace** — Clean markdown Q&A backed by SQLite history (`web_ai_history`) and dark cookie-based login when `WEB_UI_PASSWORD` is set.
 
 <details>
-<summary><b>Accessing Web UI on a Remote VPS</b></summary>
+<summary><b>Remote VPS Access (SSH Tunnel or Password Auth)</b></summary>
 
-Keep `WEB_UI_HOST=127.0.0.1` and tunnel safely over SSH:
+Keep `WEB_UI_HOST=127.0.0.1` and tunnel securely over SSH:
 
 ```bash
 ssh -N -L 8765:127.0.0.1:8765 root@YOUR_VPS_IP
 ```
 
-Or bind to your server/Tailscale IP and set `WEB_UI_PASSWORD` in `.env` to enable the dark login screen (`HttpOnly` signed session cookie + HTTP Basic Auth for scripts).
+To expose behind Tailscale/HTTPS, set `WEB_UI_PASSWORD` in `.env` to enable the dark login screen (`HttpOnly` HMAC-signed session cookies + HTTP Basic Auth for scripts).
 
 </details>
 
@@ -73,36 +102,31 @@ Or bind to your server/Tailscale IP and set `WEB_UI_PASSWORD` in `.env` to enabl
 
 ## 🚀 Quick Start
 
-### 1. Prerequisites
-- **Python 3.12+**, **FFmpeg**, and **SQLite3** (`sudo apt update && sudo apt install -y ffmpeg libmagic1 sqlite3`)
-- A free **Gemini API Key** from [Google AI Studio](https://aistudio.google.com/)
-
-### 2. Install & Configure
-
 ```bash
-git clone https://github.com/y345-git/WAmate.git
-cd WAmate
+# 1. Install system deps (Ubuntu/Debian) & clone
+sudo apt update && sudo apt install -y ffmpeg libmagic1 sqlite3
+git clone https://github.com/y345-git/WAmate.git && cd WAmate
+
+# 2. Setup Python environment
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Edit `.env` with your essentials (see `.env.example` for all options):
+Add your essentials to `.env` (see [`.env.example`](.env.example) for all flags):
 
 ```ini
-GEMINI_API_KEY=AIzaSy...                # Or GEMINI_API_KEYS=key1,key2 for 429 rotation
-TZ=Asia/Kolkata                         # Accurate "today" / "yesterday" & date filters
-PHONE_NUMBER=                           # Leave blank for QR scan, or set E.164 digits for Pairing Code
-WEB_UI_PASSWORD=                        # Recommended if exposing the Web UI beyond localhost
+GEMINI_API_KEY=AIzaSy...        # Or GEMINI_API_KEYS=key1,key2 for 429 quota rotation
+TZ=Asia/Kolkata                 # Local timezone for "today", "yesterday" & date filters
+PHONE_NUMBER=                   # Blank = QR scan; E.164 digits = 8-character pairing code
+WEB_UI_PASSWORD=                # Recommended if accessing the Web UI off localhost
 ```
 
-### 3. Run & Pair
+Start WAmate and scan the QR code (**WhatsApp &rarr; Linked Devices &rarr; Link a Device**):
 
 ```bash
 python3 main.py
 ```
-
-Scan the terminal QR code in WhatsApp (**Linked Devices > Link a Device**), or use the 8-digit pairing code if `PHONE_NUMBER` is set. Sessions persist in `data/whatsapp_session.sqlite3`.
 
 ---
 
@@ -110,15 +134,14 @@ Scan the terminal QR code in WhatsApp (**Linked Devices > Link a Device**), or u
 
 ### WhatsApp Self-Chat
 
-| Command | Purpose | Example |
+| Command | Action | Example |
 | :--- | :--- | :--- |
-| `!ask <question>` | Query chats, OCR receipts, docs, voice notes & follow-ups | `!ask total spent on Uber this month` |
-| `!get <query>` | Find and send the original file to self-chat (`!send`, `!doc`) | `!get invoice pdf` |
-| `!deleted` / `!edits` | Inspect Anti-Delete Vault records (`!vault [name]`) | `!deleted Rahul` |
+| `!ask <question>` | Search chats, OCR receipts, docs & voice notes | `!ask total Uber spend this month` |
+| `!get <query>` | Find and deliver the actual file to self-chat (`!send`, `!doc`) | `!get tax invoice pdf` |
+| `!deleted` / `!edits` | Browse Anti-Delete Vault entries (`!vault [name]`) | `!deleted Rahul` |
 | `!clear` | Reset active AI conversation memory (`!new`, `!forget`) | `!clear` |
 | `!status` | Show sync counts, stored media, OCR/doc index & DB size | `!status` |
-| `!help` | List all self-chat commands | `!help` |
-| `!unlink` | Disconnect WhatsApp session (add `delete-data` to wipe DB) | `!unlink` |
+| `!help` / `!unlink` | Show commands or disconnect WhatsApp session | `!help` |
 
 ### Terminal CLI
 
@@ -134,17 +157,17 @@ python3 main.py --unlink      # Unlink session (add --delete-data or --reset -y 
 ## 🐳 Docker
 
 ```bash
-docker compose up -d --build   # Start in background with ./data persisted
+docker compose up -d --build   # Run in background with ./data persisted
 docker logs -f wamate          # Scan QR / view pairing code
 docker compose down            # Stop container
 ```
 
 ---
 
-## 🏗️ How It Works
+## 🏗️ Architecture & Privacy
 
 <details>
-<summary><b>Architecture Diagram & Data Flow</b></summary>
+<summary><b>View Architecture Diagram</b></summary>
 
 ```mermaid
 flowchart LR
@@ -159,13 +182,9 @@ flowchart LR
 
 </details>
 
----
-
-## 🔒 Privacy & Security
-
-- **Local-First Storage:** All messages, contact mappings, cached OCR/transcripts, and media stay on your disk in `./data`. Only the specific excerpts/media inspected during an `!ask` query are sent to Gemini.
-- **Strict Isolation:** External 1-on-1 and group chats are indexed read-only; WAmate never sends messages outside your self-chat.
-- **Hardened Web UI:** Binds to `127.0.0.1` by default, blocks path-traversal outside `DOWNLOADS_DIR`, and protects access with HMAC-signed `HttpOnly` session cookies when `WEB_UI_PASSWORD` is configured.
+- **Local-First:** Chat history, contacts, cached OCR/transcripts, and media stay on your disk in `./data`. Only the specific context inspected during an `!ask` query goes to Gemini.
+- **Strictly Read-Only Elsewhere:** External 1-on-1 and group chats are indexed locally and never receive automated messages.
+- **Locked-Down Web UI:** Binds to `127.0.0.1` by default, blocks path traversal outside `DOWNLOADS_DIR`, and protects access with `HttpOnly` signed cookies when `WEB_UI_PASSWORD` is configured.
 
 ---
 
