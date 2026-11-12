@@ -1880,6 +1880,7 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
         <option value="dm">1-on-1 DMs</option>
         <option value="group">Groups Only</option>
       </select>
+      <label class="check" title="Include deleted or edited WhatsApp Status updates"><input id="vaultStatuses" type="checkbox" /> Statuses</label>
       <div class="date-range-group" data-date-group="vault" title="Filter vault items by date range">
         <input id="vaultFrom" type="date" aria-label="From date" title="From date" />
         <span class="date-sep">&ndash;</span>
@@ -2573,9 +2574,10 @@ async function loadVault() {
   const mode = document.getElementById('vaultMode').value;
   const q = document.getElementById('vaultQuery').value.trim();
   const scope = document.getElementById('vaultScope').value;
+  const statuses = document.getElementById('vaultStatuses').checked ? '1' : '0';
   const fromD = document.getElementById('vaultFrom').value;
   const toD = document.getElementById('vaultTo').value;
-  const rows = await apiGet(`/api/vault?mode=${encodeURIComponent(mode)}&q=${encodeURIComponent(q)}&scope=${encodeURIComponent(scope)}&from=${encodeURIComponent(fromD)}&to=${encodeURIComponent(toD)}&limit=50`);
+  const rows = await apiGet(`/api/vault?mode=${encodeURIComponent(mode)}&q=${encodeURIComponent(q)}&scope=${encodeURIComponent(scope)}&statuses=${statuses}&from=${encodeURIComponent(fromD)}&to=${encodeURIComponent(toD)}&limit=50`);
   const el = document.getElementById('vaultResults');
   if (!rows.length) {
     el.innerHTML = '<div class="empty-state"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg><div>No matching deleted or edited messages found.</div><div class="muted">Incoming revokes &amp; message edits are preserved here automatically.</div></div>';
@@ -2610,12 +2612,14 @@ async function loadVault() {
 document.getElementById('vaultRefreshBtn').addEventListener('click', loadVault);
 document.getElementById('vaultMode').addEventListener('change', loadVault);
 document.getElementById('vaultScope').addEventListener('change', loadVault);
+document.getElementById('vaultStatuses').addEventListener('change', loadVault);
 document.getElementById('vaultQuery').addEventListener('keydown', e => { if (e.key === 'Enter') loadVault(); });
 setupDateGroup('vault', 'vaultFrom', 'vaultTo', loadVault);
 document.getElementById('vaultClearBtn').addEventListener('click', () => {
   document.getElementById('vaultMode').value = 'all';
   document.getElementById('vaultQuery').value = '';
   document.getElementById('vaultScope').value = 'all';
+  document.getElementById('vaultStatuses').checked = false;
   resetDateGroup('vault', 'vaultFrom', 'vaultTo');
   loadVault();
 });
@@ -3461,6 +3465,7 @@ class WebUIServer:
                         mode = (qs.get("mode", ["all"])[0] or "all").strip()
                         q = (qs.get("q", [""])[0] or "").strip()
                         scope = (qs.get("scope", ["all"])[0] or "all").strip()
+                        statuses = _bool_param(qs.get("statuses", ["0"])[0])
                         date_from = _parse_date_param(qs.get("from", [""])[0], end_of_day=False)
                         date_to = _parse_date_param(qs.get("to", [""])[0], end_of_day=True)
                         limit = _clamp_int(qs.get("limit", ["50"])[0], 50, 1, 200)
@@ -3471,6 +3476,7 @@ class WebUIServer:
                                 chat_scope=scope,
                                 date_from=date_from,
                                 date_to=date_to,
+                                include_statuses=statuses,
                                 limit=limit,
                             )
                         )

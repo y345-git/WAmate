@@ -1116,6 +1116,7 @@ class DatabaseManager:
         limit: int = 20,
         date_from: int = 0,
         date_to: int = 0,
+        include_statuses: bool = True,
     ) -> list[dict[str, Any]]:
         """Retrieve deleted and/or edited messages preserved by the Anti-Delete & Edit Vault."""
         norm_mode = (mode or "all").strip().lower()
@@ -1125,6 +1126,9 @@ class DatabaseManager:
             conditions = ["m.is_edited = 1"]
         else:
             conditions = ["(m.is_deleted = 1 OR m.is_edited = 1)"]
+
+        if not include_statuses:
+            conditions.append("m.chat_jid != 'status@broadcast'")
 
         with self._get_connection() as conn:
             chat_conds, params = self._build_chat_filter_conditions(
