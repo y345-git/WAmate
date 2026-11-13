@@ -1,6 +1,7 @@
 import re
 import json
 import time
+import copy
 import zipfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -8,6 +9,12 @@ from typing import Set, Any
 from dataclasses import dataclass, field
 from neonize.proto.Neonize_pb2 import JID
 from neonize.proto.waE2E.WAWebProtobufsE2E_pb2 import Message
+
+try:
+    from neonize.utils.jid import JIDToNonAD, build_jid
+except ImportError:
+    JIDToNonAD = None
+    build_jid = None
 
 
 @dataclass
@@ -72,6 +79,50 @@ def jid_to_str(jid: JID | None) -> str:
     user = getattr(jid, "User", "")
     server = getattr(jid, "Server", "s.whatsapp.net")
     return f"{user}@{server}" if user else ""
+
+
+def clean_recipient_jid(dest: Any) -> Any:
+    """Normalize a JID object or phone/JID string to ensure no device part is present (Device=0, RawAgent=0).
+
+    WhatsApp's protocol (whatsmeow / neonize) requires that message recipients (direct or self-chat)
+    be a user JID with no device part. Linked companion clients have Device > 0 on device.JID,
+    so sending directly to device.JID fails with:
+    'message recipient must be a user JID with no device part'.
+    """
+    if dest is None:
+        return None
+
+    # Handle protobuf JID instance or duck-typed object with Device attribute
+    if isinstance(dest, JID) or hasattr(dest, "Device"):
+        cleaned = JIDToNonAD(dest) if JIDToNonAD is not None else copy.deepcopy(dest)
+        if hasattr(cleaned, "Device"):
+            cleaned.Device = 0
+        if hasattr(cleaned, "RawAgent"):
+            cleaned.RawAgent = 0
+        user = getattr(cleaned, "User", "")
+        if ":" in user:
+            cleaned.User = user.split(":", 1)[0]
+        return cleaned
+
+    s = str(dest).strip()
+    if not s:
+        return None
+
+    if "@" in s:
+        user_part, srv = s.rsplit("@", 1)
+        if ":" in user_part:
+            user_part = user_part.split(":", 1)[0]
+        if "." in user_part and srv != "g.us":
+            user_part = user_part.split(".", 1)[0]
+        if build_jid is not None:
+            return build_jid(user_part, srv)
+        return JID(User=user_part, Server=srv, Device=0, RawAgent=0, Integrator=0, IsEmpty=False)
+
+    if ":" in s:
+        s = s.split(":", 1)[0]
+    if build_jid is not None:
+        return build_jid(s)
+    return JID(User=s, Server="s.whatsapp.net", Device=0, RawAgent=0, Integrator=0, IsEmpty=False)
 
 
 def format_bytes(num_bytes: int | None) -> str:

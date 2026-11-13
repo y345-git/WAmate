@@ -24,6 +24,7 @@ from .utils import (
     LOCAL_DOC_INDEXABLE_EXTS,
     MessageDeduplicator,
     RichMessageInfo,
+    clean_recipient_jid,
     extract_protocol_action,
     extract_rich_message_info,
     extract_document_text,
@@ -59,6 +60,7 @@ class WhatsAppBot:
         self.my_jid = None
         self.my_user_number = ""
         self.my_canonical_jid = ""
+        self.my_non_ad_jid = None
         self.last_self_chat_jid = None
         self.history_sync_completed = False
 
@@ -112,6 +114,7 @@ class WhatsAppBot:
                 self.my_jid = device.JID
                 self.my_user_number = self.my_jid.User
                 self.my_canonical_jid = f"{self.my_user_number}@s.whatsapp.net"
+                self.my_non_ad_jid = clean_recipient_jid(self.my_jid)
                 push_name = device.PushName or "You"
 
                 self.my_lid_number = ""
@@ -431,7 +434,7 @@ class WhatsAppBot:
 
                 # Handle command ONLY in self-chat sent by me
                 if is_self_chat and is_from_me:
-                    self.last_self_chat_jid = chat
+                    self.last_self_chat_jid = clean_recipient_jid(chat) or chat
                     command_text = (rich_info.clean_text or text).strip()
                     quoted_context = self._build_quoted_context(rich_info)
                     self._handle_self_chat_message(
@@ -450,6 +453,25 @@ class WhatsAppBot:
         @self.client.event(LoggedOutEv)
         def on_logged_out(client: NewClient, event: LoggedOutEv):
             logger.warning("Session logged out from WhatsApp. Re-authentication will be required.")
+
+    def get_self_chat_jid(self) -> Any:
+        """Resolve a valid, device-clean recipient JID (Device=0) for sending messages into self-chat."""
+        target = getattr(self, "last_self_chat_jid", None)
+        if target:
+            clean = clean_recipient_jid(target)
+            if clean:
+                return clean
+        if getattr(self, "my_non_ad_jid", None):
+            return self.my_non_ad_jid
+        if getattr(self, "my_jid", None):
+            clean = clean_recipient_jid(self.my_jid)
+            if clean:
+                return clean
+        if getattr(self, "my_user_number", ""):
+            return clean_recipient_jid(f"{self.my_user_number}@s.whatsapp.net")
+        if getattr(self, "my_canonical_jid", ""):
+            return clean_recipient_jid(self.my_canonical_jid)
+        return None
 
     def _begin_query(self) -> None:
         with self._query_state_lock:
@@ -474,7 +496,8 @@ class WhatsAppBot:
         except Exception as e:
             logger.warning("reply_message failed (%s), sending directly to chat...", e)
             try:
-                resp = client.send_message(chat_jid, text)
+                dest = clean_recipient_jid(chat_jid) or chat_jid
+                resp = client.send_message(dest, text)
                 if resp and hasattr(resp, "ID"):
                     self.dedup.add(resp.ID)
                 logger.info("Sent direct message to self-chat.")
@@ -516,7 +539,7 @@ class WhatsAppBot:
                     preserved.get("chat", chat_jid),
                     preserved.get("deleted_by", actor_name),
                 )
-                target_self = self.last_self_chat_jid or self.my_jid
+                target_self = self.get_self_chat_jid()
                 if (
                     allow_notify
                     and Config.ANTI_DELETE_NOTIFY
@@ -617,39 +640,40 @@ class WhatsAppBot:
         source = message.Info.MessageSource
         chat = source.Chat
         sender = source.Sender
+        dest = clean_recipient_jid(chat_jid) or chat_jid
 
         try:
             logger.info("Processing self-chat query: '%s'", query)
             try:
                 client.send_chat_presence(
-                    chat_jid, ChatPresence.CHAT_PRESENCE_COMPOSING, ChatPresenceMedia.CHAT_PRESENCE_MEDIA_TEXT
+                    dest, ChatPresence.CHAT_PRESENCE_COMPOSING, ChatPresenceMedia.CHAT_PRESENCE_MEDIA_TEXT
                 )
             except Exception as pe:
                 logger.debug("Could not send typing presence indicator: %s", pe)
 
             try:
                 react_pending = client.build_reaction(chat, sender, msg_id, "⏳")
-                client.send_message(chat_jid, react_pending)
+                client.send_message(dest, react_pending)
             except Exception as re_err:
                 logger.debug("Could not send pending reaction: %s", re_err)
 
             raw_answer = self.gemini.ask(query, quoted_context=quoted_context)
             answer = format_for_whatsapp(raw_answer)
-            self._send_self_chat_reply(client, chat_jid, message, answer)
+            self._send_self_chat_reply(client, dest, message, answer)
         except Exception as e:
             logger.exception("Unhandled error in async query worker: %s", e)
-            self._send_self_chat_reply(client, chat_jid, message, f"⚠️ *Error processing request:*\n`{e}`")
+            self._send_self_chat_reply(client, dest, message, f"⚠️ *Error processing request:*\n`{e}`")
         finally:
             self._end_query()
             try:
                 client.send_chat_presence(
-                    chat_jid, ChatPresence.CHAT_PRESENCE_PAUSED, ChatPresenceMedia.CHAT_PRESENCE_MEDIA_TEXT
+                    dest, ChatPresence.CHAT_PRESENCE_PAUSED, ChatPresenceMedia.CHAT_PRESENCE_MEDIA_TEXT
                 )
             except Exception:
                 pass
             try:
                 react_done = client.build_reaction(chat, sender, msg_id, "✅")
-                client.send_message(chat_jid, react_done)
+                client.send_message(dest, react_done)
             except Exception:
                 pass
 
@@ -1100,7 +1124,7 @@ class WhatsAppBot:
         """Find matching document(s), download them, and send the actual file(s) directly into self-chat.
         If a candidate file link has expired on WhatsApp CDN (410), automatically tries subsequent matches.
         """
-        dest_jid = target_jid or getattr(self, "last_self_chat_jid", None) or self.my_jid
+        dest_jid = clean_recipient_jid(target_jid) if target_jid else self.get_self_chat_jid()
         if not dest_jid:
             return "Cannot send document: self-chat destination JID is not yet available."
 
@@ -1168,7 +1192,7 @@ class WhatsAppBot:
         if not row:
             return False, "Message not found."
 
-        dest_jid = getattr(self, "last_self_chat_jid", None) or self.my_jid
+        dest_jid = self.get_self_chat_jid()
         if not dest_jid:
             return False, "WhatsApp self-chat is not connected yet."
 
