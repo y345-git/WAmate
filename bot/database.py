@@ -399,6 +399,22 @@ class DatabaseManager:
             except Exception as re_err:
                 logger.debug("Default roles seed skipped: %s", re_err)
 
+            # Clean up duplicate companion device IDs in entity_roles and legacy @lid contacts
+            try:
+                conn.execute("""
+                    UPDATE entity_roles 
+                    SET jid = SUBSTR(jid, 1, INSTR(jid, ':') - 1) || '@' || SUBSTR(jid, INSTR(jid, '@') + 1) 
+                    WHERE jid LIKE '%:%@%'
+                """)
+                conn.execute("""
+                    DELETE FROM entity_roles 
+                    WHERE rowid NOT IN (SELECT MIN(rowid) FROM entity_roles GROUP BY jid, role)
+                """)
+                conn.execute("DELETE FROM contacts WHERE jid LIKE '%@lid'")
+                conn.execute("DELETE FROM contacts WHERE jid LIKE '%:%'")
+            except Exception as cl_err:
+                logger.debug("Entity roles / contacts cleanup notice: %s", cl_err)
+
             conn.commit()
             logger.info("Database initialized successfully at %s", self.db_path)
 
@@ -3080,6 +3096,20 @@ class DatabaseManager:
         if is_group is not None:
             where.append("c.is_group = ?")
             params.append(1 if is_group else 0)
+            if not is_group:
+                # Only show saved contacts with a real name (exclude @lid, companion IDs, raw phone numbers)
+                where.append("c.jid LIKE '%@s.whatsapp.net'")
+                where.append("c.jid NOT LIKE '%:%'")
+                where.append("""(
+                    c.jid IN (SELECT jid FROM entity_roles)
+                    OR (
+                        c.name IS NOT NULL
+                        AND TRIM(c.name) != ''
+                        AND c.name NOT GLOB '+[0-9]*'
+                        AND (c.phone_number IS NULL OR TRIM(c.name) != TRIM(c.phone_number))
+                        AND TRIM(c.name) != TRIM(c.jid)
+                    )
+                )""")
 
         clean_search = (search or "").strip().lower()
         if clean_search:
@@ -3150,6 +3180,19 @@ class DatabaseManager:
 
         if audience == "contacts":
             where_clauses.append("c.is_group = 0")
+            where_clauses.append("c.jid LIKE '%@s.whatsapp.net'")
+            where_clauses.append("c.jid NOT LIKE '%:%'")
+            if not clean_roles:
+                where_clauses.append("""(
+                    c.jid IN (SELECT jid FROM entity_roles)
+                    OR (
+                        c.name IS NOT NULL
+                        AND TRIM(c.name) != ''
+                        AND c.name NOT GLOB '+[0-9]*'
+                        AND (c.phone_number IS NULL OR TRIM(c.name) != TRIM(c.phone_number))
+                        AND TRIM(c.name) != TRIM(c.jid)
+                    )
+                )""")
         elif audience == "groups":
             where_clauses.append("c.is_group = 1")
 
@@ -3170,14 +3213,24 @@ class DatabaseManager:
 
         with self._get_connection() as conn:
             rows = conn.execute(query, tuple(params)).fetchall()
+            seen_clean_jids = set()
             out = []
             for r in rows:
+                raw_jid = r["jid"] or ""
+                # Strip companion device part if present (e.g. 919850567766:34@s.whatsapp.net -> 919850567766@s.whatsapp.net)
+                if ":" in raw_jid and "@" in raw_jid:
+                    u, srv = raw_jid.split("@", 1)
+                    raw_jid = f"{u.split(':')[0]}@{srv}"
+                if raw_jid in seen_clean_jids:
+                    continue
+                seen_clean_jids.add(raw_jid)
                 roles_arr = [x.strip() for x in (r["roles"] or "").split(",") if x.strip()]
-                name = r["name"] or r["push_name"] or r["phone_number"] or r["jid"]
+                name = r["name"] or r["push_name"] or r["phone_number"] or raw_jid
+                phone = r["phone_number"] or (raw_jid.split("@")[0] if not r["is_group"] else "")
                 out.append({
-                    "jid": r["jid"],
+                    "jid": raw_jid,
                     "name": name,
-                    "phone": r["phone_number"] or "",
+                    "phone": phone,
                     "is_group": bool(r["is_group"]),
                     "roles": roles_arr,
                 })

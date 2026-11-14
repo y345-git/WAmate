@@ -2147,6 +2147,84 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
     border-color: #f45b69;
     transform: scale(1.05);
   }
+  button.text-link, .text-link {
+    background: transparent !important;
+    border: none !important;
+    color: var(--accent) !important;
+    font-size: 0.78rem !important;
+    font-weight: 600 !important;
+    cursor: pointer !important;
+    padding: 3px 8px !important;
+    border-radius: 6px !important;
+    text-decoration: none !important;
+    transition: all 0.15s ease !important;
+    display: inline-flex !important;
+    align-items: center !important;
+  }
+  button.text-link:hover, .text-link:hover {
+    background: rgba(0, 200, 150, 0.12) !important;
+    color: #38ef7d !important;
+  }
+  input[type="file"]::file-selector-button {
+    background: #15252d;
+    color: #e2f0ed;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    padding: 6px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 0.78rem;
+    font-weight: 500;
+    margin-right: 10px;
+    transition: background 0.15s, border-color 0.15s;
+  }
+  input[type="file"]::file-selector-button:hover {
+    background: #1c323d;
+    border-color: var(--accent);
+    color: #fff;
+  }
+  .bcast-progress-wrap {
+    background: #061017;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 10px;
+    padding: 16px;
+    margin: 8px 0;
+  }
+  .bcast-progress-bar-bg {
+    background: rgba(255, 255, 255, 0.06);
+    height: 10px;
+    border-radius: 9999px;
+    overflow: hidden;
+    position: relative;
+    margin-top: 8px;
+  }
+  .bcast-progress-bar-fill {
+    background: linear-gradient(90deg, #00c896, #38ef7d);
+    height: 100%;
+    width: 0%;
+    transition: width 0.25s ease;
+    border-radius: 9999px;
+  }
+  .bcast-progress-logs {
+    max-height: 190px;
+    overflow-y: auto;
+    font-size: 12px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    background: #04090d;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 8px;
+    padding: 8px;
+    margin-top: 8px;
+  }
+  .bcast-progress-log-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 5px 8px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+  }
+  .bcast-progress-log-item:last-child {
+    border-bottom: none;
+  }
   .bcast-role-creator-bar {
     display: flex;
     gap: 10px;
@@ -3040,6 +3118,57 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
   </div>
   <div class="modal-body">
     <div id="campaignLogsModalContent" class="bcast-logs-container"></div>
+  </div>
+</dialog>
+
+<dialog id="rolePickerModal" class="bcast-modal" style="max-width:380px;">
+  <div class="modal-hdr">
+    <strong id="rolePickerTitle">Assign Role</strong>
+    <button class="ghost-btn" onclick="document.getElementById('rolePickerModal').close()">✕</button>
+  </div>
+  <div class="modal-body bcast-modal-body">
+    <p id="rolePickerSubtitle" style="font-size:12px;color:var(--muted);margin-bottom:8px;">Select a role to assign instantly:</p>
+    <div id="rolePickerPills" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:14px;"></div>
+    <div style="border-top:1px solid rgba(255,255,255,0.06);padding-top:12px;">
+      <div style="font-size:11px;color:var(--muted);margin-bottom:6px;">Or create a new role:</div>
+      <div style="display:flex;gap:6px;">
+        <input id="rolePickerNewName" type="text" class="bcast-input grow" placeholder="New role name..."/>
+        <button type="button" class="primary-btn-sm" onclick="rolePickerCreateAndAssign()">+ Add</button>
+      </div>
+    </div>
+  </div>
+</dialog>
+
+<dialog id="broadcastProgressModal" class="bcast-modal" style="max-width:540px;">
+  <div class="modal-hdr">
+    <div style="display:flex;align-items:center;gap:8px;">
+      <span class="live-dot"></span>
+      <strong id="bcastProgressModalTitle">Broadcasting Messages</strong>
+    </div>
+    <button id="bcastProgressCloseBtn" class="ghost-btn" onclick="closeBroadcastProgressModal()" disabled>✕</button>
+  </div>
+  <div class="modal-body bcast-modal-body">
+    <div class="bcast-progress-wrap">
+      <div style="display:flex;justify-content:space-between;align-items:center;font-size:13px;">
+        <span id="bcastProgressStatus" style="font-weight:600;color:var(--text);">Preparing broadcast...</span>
+        <span id="bcastProgressPercent" style="font-weight:700;color:var(--accent);">0%</span>
+      </div>
+      <div class="bcast-progress-bar-bg">
+        <div id="bcastProgressBar" class="bcast-progress-bar-fill"></div>
+      </div>
+      <div style="display:flex;gap:16px;margin-top:12px;font-size:12px;color:var(--muted);">
+        <div>Total: <strong id="bcastTotalCount" style="color:var(--text);">0</strong></div>
+        <div>Sent: <strong id="bcastSentCount" style="color:var(--accent);">0</strong></div>
+        <div>Failed: <strong id="bcastFailedCount" style="color:var(--danger);">0</strong></div>
+      </div>
+    </div>
+    <div style="font-size:11px;font-weight:600;text-transform:uppercase;color:var(--muted);letter-spacing:0.5px;margin-top:4px;">Recipient Delivery Feed</div>
+    <div id="bcastProgressLogs" class="bcast-progress-logs">
+      <div style="color:var(--muted);text-align:center;padding:12px 0;">Live delivery log will appear here as messages are sent...</div>
+    </div>
+    <div class="bcast-modal-actions" style="margin-top:10px;">
+      <button id="bcastProgressDoneBtn" type="button" class="primary-btn-sm" onclick="closeBroadcastProgressModal()" disabled style="display:inline-flex;">Done</button>
+    </div>
   </div>
 </dialog>
 
@@ -4456,6 +4585,90 @@ function initSendTab() {
   });
 }
 
+function openBroadcastProgressModal(totalCount = 0) {
+  const dlg = document.getElementById('broadcastProgressModal');
+  if (!dlg) return;
+  const bar = document.getElementById('bcastProgressBar');
+  const pct = document.getElementById('bcastProgressPercent');
+  const st = document.getElementById('bcastProgressStatus');
+  const tot = document.getElementById('bcastTotalCount');
+  const snt = document.getElementById('bcastSentCount');
+  const fld = document.getElementById('bcastFailedCount');
+  const logs = document.getElementById('bcastProgressLogs');
+  const closeBtn = document.getElementById('bcastProgressCloseBtn');
+  const doneBtn = document.getElementById('bcastProgressDoneBtn');
+
+  if (bar) bar.style.width = '0%';
+  if (pct) pct.textContent = '0%';
+  if (st) st.textContent = 'Preparing broadcast dispatch...';
+  if (tot) tot.textContent = String(totalCount || '0');
+  if (snt) snt.textContent = '0';
+  if (fld) fld.textContent = '0';
+  if (logs) logs.innerHTML = '<div style="color:var(--muted);text-align:center;padding:12px 0;">Connecting to WhatsApp dispatch queue...</div>';
+  if (closeBtn) closeBtn.disabled = true;
+  if (doneBtn) { doneBtn.disabled = true; doneBtn.textContent = 'Sending...'; }
+
+  dlg.showModal();
+}
+
+function updateBroadcastProgressUI(prog) {
+  if (!prog) return;
+  const bar = document.getElementById('bcastProgressBar');
+  const pct = document.getElementById('bcastProgressPercent');
+  const st = document.getElementById('bcastProgressStatus');
+  const tot = document.getElementById('bcastTotalCount');
+  const snt = document.getElementById('bcastSentCount');
+  const fld = document.getElementById('bcastFailedCount');
+  const logs = document.getElementById('bcastProgressLogs');
+  const closeBtn = document.getElementById('bcastProgressCloseBtn');
+  const doneBtn = document.getElementById('bcastProgressDoneBtn');
+
+  const p = Math.min(100, Math.max(0, prog.percent || 0));
+  if (bar) bar.style.width = `${p}%`;
+  if (pct) pct.textContent = `${p}%`;
+  if (tot) tot.textContent = String(prog.total || 0);
+  if (snt) snt.textContent = String(prog.sent_count || 0);
+  if (fld) fld.textContent = String(prog.failed_count || 0);
+
+  if (st) {
+    if (prog.status === 'complete') {
+      st.innerHTML = '<span style="color:var(--accent);">✓ Broadcast Complete</span>';
+    } else if (prog.current_recipient) {
+      st.textContent = `Sending ${prog.current || 1} of ${prog.total || 1}: ${prog.current_recipient}...`;
+    } else {
+      st.textContent = `Dispatching messages (${p}%)...`;
+    }
+  }
+
+  if (logs && Array.isArray(prog.logs) && prog.logs.length) {
+    logs.innerHTML = prog.logs.map(l => {
+      const isSent = l.status === 'sent';
+      const color = isSent ? 'var(--accent)' : 'var(--danger)';
+      const icon = isSent ? '✓' : '✗';
+      const timeStr = l.timestamp ? new Date(l.timestamp * 1000).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'}) : '';
+      return `<div class="bcast-progress-log-item">
+        <div>
+          <span style="color:${color};font-weight:700;margin-right:6px;">${icon}</span>
+          <strong style="color:var(--text);">${esc(l.name || l.phone || l.jid)}</strong>
+          ${l.error ? `<span style="color:var(--danger);font-size:11px;margin-left:6px;">(${esc(l.error)})</span>` : ''}
+        </div>
+        <div style="color:var(--muted);font-size:11px;">${timeStr}</div>
+      </div>`;
+    }).join('');
+    logs.scrollTop = logs.scrollHeight;
+  }
+
+  if (prog.status === 'complete') {
+    if (closeBtn) closeBtn.disabled = false;
+    if (doneBtn) { doneBtn.disabled = false; doneBtn.textContent = 'Close'; }
+  }
+}
+
+function closeBroadcastProgressModal() {
+  const dlg = document.getElementById('broadcastProgressModal');
+  if (dlg) dlg.close();
+}
+
 async function submitBroadcastSend() {
   const btn = document.getElementById('sendBroadcastBtn');
   const msgInput = document.getElementById('sendMessageText');
@@ -4478,6 +4691,23 @@ async function submitBroadcastSend() {
     btn.innerHTML = '<span class="live-dot"></span> Sending broadcast to WhatsApp...';
   }
 
+  // Open live progress tracker modal immediately
+  openBroadcastProgressModal();
+
+  let pollTimer = setInterval(async () => {
+    try {
+      const pRes = await fetch('/api/campaigns/active_progress');
+      const pData = await pRes.json();
+      if (pData.ok && pData.progress) {
+        updateBroadcastProgressUI(pData.progress);
+        if (pData.progress.status === 'complete') {
+          clearInterval(pollTimer);
+          pollTimer = null;
+        }
+      }
+    } catch (e) {}
+  }, 350);
+
   try {
     const res = await fetch('/api/campaigns/send', {
       method: 'POST',
@@ -4494,7 +4724,7 @@ async function submitBroadcastSend() {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
-    
+
     const summary = data.result || {};
     showToast(`Broadcast completed: ${summary.sent || 0} sent, ${summary.failed || 0} failed in ${(summary.duration || 0).toFixed(1)}s`);
     if (msgInput) msgInput.value = '';
@@ -4505,6 +4735,23 @@ async function submitBroadcastSend() {
   } catch (e) {
     showToast(`Broadcast failed: ${e.message}`);
   } finally {
+    if (pollTimer) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+    }
+    // Fetch final progress state
+    try {
+      const pRes = await fetch('/api/campaigns/active_progress');
+      const pData = await pRes.json();
+      if (pData.ok && pData.progress) {
+        updateBroadcastProgressUI(pData.progress);
+      }
+    } catch (e) {}
+    const closeBtn = document.getElementById('bcastProgressCloseBtn');
+    const doneBtn = document.getElementById('bcastProgressDoneBtn');
+    if (closeBtn) closeBtn.disabled = false;
+    if (doneBtn) { doneBtn.disabled = false; doneBtn.textContent = 'Close'; }
+
     if (btn) {
       btn.disabled = false;
       btn.innerHTML = '<svg class="ico-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg><span>Send Broadcast Now</span>';
@@ -4712,12 +4959,10 @@ async function loadContactsList(page = 0) {
       <table class="bcast-table">
         <thead>
           <tr>
-            <th>Contact Name</th>
-            <th>Phone / JID</th>
-            <th>Push Name</th>
-            <th>Roles Assigned</th>
-            <th>Notes</th>
-            <th>Actions</th>
+            <th>Name</th>
+            <th>Phone Number</th>
+            <th>Assigned Roles</th>
+            <th style="text-align:right;">Actions</th>
           </tr>
         </thead>
         <tbody>
@@ -4728,19 +4973,19 @@ async function loadContactsList(page = 0) {
               return `<span class="stat-pill" style="--pill-color:${esc(color)};border-color:${esc(color)};color:var(--text);font-size:11px;">${esc(rName)} <button type="button" class="bcast-chip-del" onclick="quickToggleRole(${escArg(c.jid)}, ${escArg(rName)}, false, false)">&times;</button></span>`;
             }).join(' ');
 
+            const phoneDisplay = c.phone || c.phone_number || (c.jid ? c.jid.split('@')[0] : '');
+
             return `
               <tr>
-                <td><strong>${esc(c.name || c.push_name || 'Unnamed')}</strong></td>
-                <td><code style="font-size:12px;">${esc(c.phone_number || c.jid || '')}</code></td>
-                <td style="color:var(--muted);">${esc(c.push_name || '')}</td>
+                <td><strong>${esc(c.name || 'Unnamed')}</strong></td>
+                <td><code style="font-size:12px;color:var(--text-soft);">${esc(phoneDisplay)}</code></td>
                 <td>
                   <div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center;">
                     ${roleChips}
-                    <button type="button" class="ghost-btn-sm" style="padding:2px 7px;font-size:11px;" onclick="promptAddRole(${escArg(c.jid)}, false, ${escArg(JSON.stringify(c.roles || []))})">+ Role</button>
+                    <button type="button" class="ghost-btn-sm" style="padding:2px 7px;font-size:11px;" onclick="openRolePickerModal(${escArg(c.jid)}, false, ${escArg(JSON.stringify(c.roles || []))}, ${escArg(c.name || phoneDisplay)})">+ Role</button>
                   </div>
                 </td>
-                <td style="color:var(--muted);font-size:12px;">${esc(c.notes || '')}</td>
-                <td>
+                <td style="text-align:right;">
                   <button type="button" class="ghost-btn-sm" style="color:var(--danger)" onclick="deleteCustomContact(${escArg(c.jid)})">Delete</button>
                 </td>
               </tr>
@@ -4872,7 +5117,7 @@ async function loadGroupsList(page = 0) {
                 <td>
                   <div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center;">
                     ${roleChips}
-                    <button type="button" class="ghost-btn-sm" style="padding:2px 7px;font-size:11px;" onclick="promptAddRole(${escArg(g.jid)}, true, ${escArg(JSON.stringify(g.roles || []))})">+ Role</button>
+                    <button type="button" class="ghost-btn-sm" style="padding:2px 7px;font-size:11px;" onclick="openRolePickerModal(${escArg(g.jid)}, true, ${escArg(JSON.stringify(g.roles || []))}, ${escArg(g.name || 'Group')})">+ Role</button>
                   </div>
                 </td>
               </tr>
@@ -4920,21 +5165,62 @@ async function quickToggleRole(jid, roleName, shouldAdd, isGroup) {
   }
 }
 
-function promptAddRole(jid, isGroup, currentRolesJson) {
+function openRolePickerModal(jid, isGroup, currentRolesJson, entityName) {
+  const dlg = document.getElementById('rolePickerModal');
+  if (!dlg) return;
   const currentRoles = typeof currentRolesJson === 'string' ? JSON.parse(currentRolesJson) : (currentRolesJson || []);
-  const available = window._cachedRoles.filter(r => !currentRoles.includes(r.name));
+  window._rolePickerTarget = { jid, isGroup, currentRoles };
+
+  const title = document.getElementById('rolePickerTitle');
+  const sub = document.getElementById('rolePickerSubtitle');
+  const pillsWrap = document.getElementById('rolePickerPills');
+  const inp = document.getElementById('rolePickerNewName');
+  if (inp) inp.value = '';
+
+  if (title) title.textContent = 'Assign Role';
+  if (sub) sub.textContent = `Select a role for "${entityName || jid}":`;
+
+  const available = (window._cachedRoles || []).filter(r => !currentRoles.includes(r.name));
   if (!available.length) {
-    showToast('All existing roles are already assigned.');
+    pillsWrap.innerHTML = '<div style="font-size:12px;color:var(--muted);padding:6px 0;">All existing roles are already assigned to this entity.</div>';
+  } else {
+    pillsWrap.innerHTML = available.map(r => {
+      const color = r.color || '#00c896';
+      return `<button type="button" class="bcast-role-pill" style="--role-color:${esc(color)};background:rgba(255,255,255,0.04);border:1px solid ${esc(color)};color:var(--text);padding:6px 14px;border-radius:9999px;font-size:12px;cursor:pointer;font-weight:600;display:inline-flex;align-items:center;gap:6px;transition:all 0.15s ease;" onmouseover="this.style.background='${esc(color)}22'" onmouseout="this.style.background='rgba(255,255,255,0.04)'" onclick="applyRoleFromPicker(${escArg(r.name)})"><span style="width:8px;height:8px;border-radius:50%;background:${esc(color)};display:inline-block;"></span>${esc(r.name)}</button>`;
+    }).join(' ');
+  }
+
+  dlg.showModal();
+}
+
+async function applyRoleFromPicker(roleName) {
+  const target = window._rolePickerTarget;
+  if (!target || !roleName) return;
+  const dlg = document.getElementById('rolePickerModal');
+  if (dlg) dlg.close();
+  await quickToggleRole(target.jid, roleName, true, target.isGroup);
+}
+
+async function rolePickerCreateAndAssign() {
+  const inp = document.getElementById('rolePickerNewName');
+  const newName = (inp ? inp.value : '').trim();
+  if (!newName) {
+    showToast('Please enter a role name');
     return;
   }
-  const roleName = prompt(`Choose role to assign:\n\n${available.map(r => r.name).join(', ')}`);
-  if (!roleName) return;
-  const match = available.find(r => r.name.toLowerCase() === roleName.trim().toLowerCase());
-  if (!match) {
-    showToast('Role not found. Please type the exact role name or create it first.');
-    return;
-  }
-  quickToggleRole(jid, match.name, true, isGroup);
+  const target = window._rolePickerTarget;
+  if (!target) return;
+  const dlg = document.getElementById('rolePickerModal');
+  if (dlg) dlg.close();
+  try {
+    await fetch('/api/roles/create', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: newName, color: '#00c896' }),
+    });
+    await fetchCachedRoles(true);
+  } catch (e) {}
+  await quickToggleRole(target.jid, newName, true, target.isGroup);
 }
 
 function selectRoleColor(col) {
@@ -5939,6 +6225,11 @@ class WebUIServer:
                                 "Cache-Control": "no-cache",
                             },
                         )
+                        return
+
+                    if path == "/api/campaigns/active_progress":
+                        prog = getattr(parent.bot_client, "active_broadcast_progress", {}) if parent.bot_client else {}
+                        self._send_json({"ok": True, "progress": prog})
                         return
 
                     self._send_json({"error": "Not found"}, status=404)

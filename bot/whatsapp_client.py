@@ -63,6 +63,16 @@ class WhatsAppBot:
         self.my_non_ad_jid = None
         self.last_self_chat_jid = None
         self.history_sync_completed = False
+        self.active_broadcast_progress: dict[str, Any] = {
+            "status": "idle",
+            "total": 0,
+            "current": 0,
+            "current_recipient": "",
+            "sent_count": 0,
+            "failed_count": 0,
+            "percent": 0,
+            "logs": [],
+        }
 
         # Link Gemini agent back to this bot client for document sending & extraction tools
         if self.gemini:
@@ -954,48 +964,43 @@ class WhatsAppBot:
 
             synced = 0
             for their_jid, full_name, first_name, push_name, business_name in contacts:
-                if not their_jid:
+                if not their_jid or "@lid" in their_jid:
                     continue
-                name = (full_name or first_name or business_name or "").strip()
+                raw_name = (full_name or first_name or business_name or "").strip()
                 pname = (push_name or "").strip()
-                phone = their_jid.split("@")[0] if "@" in their_jid else ""
+                phone = their_jid.split("@")[0].split(":")[0] if "@" in their_jid else ""
                 is_group = their_jid.endswith("@g.us")
 
-                if name or pname:
+                if not is_group:
+                    # Filter out unsaved phone-like names (+91..., digits only)
+                    digits_name = re.sub(r"\D", "", raw_name)
+                    digits_phone = re.sub(r"\D", "", phone)
+                    is_phone_name = bool(digits_name and (digits_name == digits_phone or raw_name.startswith("+")))
+                    if not raw_name or is_phone_name:
+                        continue
+                    clean_jid = f"{phone}@s.whatsapp.net"
                     self.db.upsert_contact(
-                        jid=their_jid,
-                        name=name or None,
+                        jid=clean_jid,
+                        name=raw_name,
                         push_name=pname or None,
-                        phone_number=phone if not is_group else None,
-                        is_group=is_group,
+                        phone_number=phone,
+                        is_group=False,
                     )
                     synced += 1
-
-            # Sync LID to phone number mappings
-            try:
-                lid_rows = sc.execute("SELECT lid, pn FROM whatsmeow_lid_map").fetchall()
-                lid_contacts = []
-                for lid, pn in lid_rows:
-                    lid_jid = f"{lid}@lid"
-                    pn_jid = f"{pn}@s.whatsapp.net"
-                    c = self.db.get_contact(pn_jid)
-                    name = (c.get("name") or c.get("push_name")) if c else None
-                    lid_contacts.append({
-                        "jid": lid_jid,
-                        "name": name,
-                        "phone_number": pn,
-                        "is_group": False,
-                    })
-                if lid_contacts:
-                    self.db.upsert_contacts_batch(lid_contacts)
-                    synced += len(lid_contacts)
-            except Exception as le:
-                logger.debug("LID map sync notice: %s", le)
+                else:
+                    g_name = raw_name or pname
+                    if g_name:
+                        self.db.upsert_contact(
+                            jid=their_jid,
+                            name=g_name,
+                            push_name=pname or None,
+                            phone_number=None,
+                            is_group=True,
+                        )
+                        synced += 1
 
             s_conn.close()
-
-            self.db.backfill_contact_names()
-            logger.info("Synchronized %d phone contacts & LID mappings into database.", synced)
+            logger.info("Synchronized %d saved phone contacts into database.", synced)
 
             # Also fetch and sync joined WhatsApp groups
             self.sync_joined_groups()
@@ -1314,6 +1319,17 @@ class WhatsAppBot:
         msg_text = (message or "").strip()
         att_path = Path(attachment_path) if attachment_path and Path(attachment_path).is_file() else None
 
+        self.active_broadcast_progress = {
+            "status": "sending",
+            "total": total,
+            "current": 0,
+            "current_recipient": "",
+            "sent_count": 0,
+            "failed_count": 0,
+            "percent": 0,
+            "logs": [],
+        }
+
         for idx, rec in enumerate(recipients):
             if self._stop_worker_event.is_set():
                 logs.append({
@@ -1325,6 +1341,7 @@ class WhatsAppBot:
                     "timestamp": int(time.time()),
                 })
                 failed_count += 1
+                self.active_broadcast_progress["failed_count"] = failed_count
                 continue
 
             raw_jid = rec.get("jid") or rec.get("phone") or ""
@@ -1332,65 +1349,119 @@ class WhatsAppBot:
             rec_name = rec.get("name") or rec.get("push_name") or rec.get("phone") or str(raw_jid)
             phone = rec.get("phone") or ""
 
+            self.active_broadcast_progress["current"] = idx + 1
+            self.active_broadcast_progress["current_recipient"] = rec_name
+            self.active_broadcast_progress["percent"] = int((idx / max(1, total)) * 100)
+
             if not dest:
-                logs.append({
+                log_entry = {
                     "jid": str(raw_jid),
                     "name": rec_name,
                     "phone": phone,
                     "status": "failed",
                     "error": "Invalid destination JID",
                     "timestamp": int(time.time()),
-                })
+                }
+                logs.append(log_entry)
                 failed_count += 1
+                self.active_broadcast_progress["failed_count"] = failed_count
+                self.active_broadcast_progress["logs"].append(log_entry)
                 continue
+
+            # Route to self-chat if recipient is the bot user themselves
+            dest_user = getattr(dest, "User", "") or str(raw_jid).split("@")[0].split(":")[0]
+            dest_phone = phone or dest_user
+            is_self = False
+            if getattr(self, "my_user_number", "") and (dest_phone == self.my_user_number or dest_user == self.my_user_number):
+                is_self = True
+            elif getattr(self, "my_canonical_jid", "") and (str(raw_jid).startswith(self.my_user_number) or dest_user == self.my_user_number):
+                is_self = True
+
+            target_dest = (self.get_self_chat_jid() or dest) if is_self else dest
 
             try:
                 resp = None
+                fname = ""
+                mime = ""
                 if att_path:
                     fname = attachment_filename or att_path.name
                     mime = attachment_mimetype or "application/octet-stream"
                     if mime.startswith("image/"):
-                        resp = self.client.send_image(to=dest, file=str(att_path), caption=msg_text)
+                        resp = self.client.send_image(to=target_dest, file=str(att_path), caption=msg_text)
                     elif mime.startswith("video/"):
-                        resp = self.client.send_video(to=dest, file=str(att_path), caption=msg_text)
+                        resp = self.client.send_video(to=target_dest, file=str(att_path), caption=msg_text)
                     elif mime.startswith("audio/"):
-                        resp = self.client.send_audio(to=dest, file=str(att_path))
+                        resp = self.client.send_audio(to=target_dest, file=str(att_path))
                         if msg_text:
-                            self.client.send_message(dest, msg_text)
+                            self.client.send_message(target_dest, msg_text)
                     else:
                         resp = self.client.send_document(
-                            to=dest,
+                            to=target_dest,
                             file=str(att_path),
                             filename=fname,
                             mimetype=mime,
                             caption=msg_text,
                         )
                 else:
-                    resp = self.client.send_message(dest, msg_text)
+                    resp = self.client.send_message(target_dest, msg_text)
 
+                msg_id = getattr(resp, "ID", "") or f"bcast_{int(time.time() * 1000)}_{idx}"
                 if resp and hasattr(resp, "ID"):
                     self.dedup.add(resp.ID)
 
+                # Persist sent broadcast message into local messages database
+                try:
+                    target_chat_jid = str(raw_jid)
+                    if "@" not in target_chat_jid:
+                        target_chat_jid = f"{target_chat_jid}@s.whatsapp.net"
+                    if is_self and getattr(self, "my_canonical_jid", ""):
+                        target_chat_jid = self.my_canonical_jid
+                    self.db.insert_message(
+                        msg_id=msg_id,
+                        chat_jid=target_chat_jid,
+                        chat_name=rec_name,
+                        sender_jid=self.my_canonical_jid or "me",
+                        sender_name="You",
+                        text=msg_text,
+                        timestamp=int(time.time()),
+                        is_from_me=True,
+                        is_group="@g.us" in target_chat_jid,
+                        media_type="text" if not att_path else mime.split("/")[0],
+                        media_filename=fname if att_path else "",
+                        media_mimetype=mime if att_path else "",
+                        media_size=att_path.stat().st_size if att_path and att_path.exists() else 0,
+                    )
+                except Exception as e_db:
+                    logger.debug("Broadcast local message insertion notice: %s", e_db)
+
                 sent_count += 1
-                logs.append({
+                log_entry = {
                     "jid": str(raw_jid),
                     "name": rec_name,
                     "phone": phone,
                     "status": "sent",
                     "error": "",
                     "timestamp": int(time.time()),
-                })
+                }
+                logs.append(log_entry)
+                self.active_broadcast_progress["sent_count"] = sent_count
+                self.active_broadcast_progress["percent"] = int(((idx + 1) / max(1, total)) * 100)
+                self.active_broadcast_progress["logs"].append(log_entry)
                 logger.info("Broadcast sent [%d/%d] to %s (%s)", idx + 1, total, rec_name, raw_jid)
             except Exception as exc:
                 failed_count += 1
-                logs.append({
+                log_entry = {
                     "jid": str(raw_jid),
                     "name": rec_name,
                     "phone": phone,
                     "status": "failed",
                     "error": str(exc),
                     "timestamp": int(time.time()),
-                })
+                }
+                logs.append(log_entry)
+                self.active_broadcast_progress["failed_count"] = failed_count
+                self.active_broadcast_progress["percent"] = int(((idx + 1) / max(1, total)) * 100)
+                self.active_broadcast_progress["logs"].append(log_entry)
                 logger.warning("Broadcast failed [%d/%d] to %s: %s", idx + 1, total, raw_jid, exc)
 
             # Safe inter-message delay
@@ -1399,6 +1470,9 @@ class WhatsAppBot:
                 self._stop_worker_event.wait(delay)
 
         elapsed = time.monotonic() - t0
+        self.active_broadcast_progress["status"] = "complete"
+        self.active_broadcast_progress["percent"] = 100
+        self.active_broadcast_progress["current_recipient"] = "Finished"
         return {
             "total": total,
             "sent": sent_count,

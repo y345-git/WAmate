@@ -200,6 +200,34 @@ def test_all():
     assert counts["roles"] >= 2
     print("   [OK] Excel export and import round-trip verified.")
 
+    # 6. Test Saved Contacts Filter & Active Broadcast Progress
+    print("\n6. Testing Saved Contacts Filter & Active Broadcast Progress...")
+    # Insert dummy contacts: saved contact, unsaved raw phone, companion device, and @lid
+    db.upsert_contact(jid="919999999001@s.whatsapp.net", name="Saved Friend", phone_number="919999999001")
+    db.upsert_contact(jid="919999999002@s.whatsapp.net", name="+91 99999 99002", phone_number="919999999002")  # Unsaved raw phone
+    db.upsert_contact(jid="919999999003:34@s.whatsapp.net", name="Companion Device", phone_number="919999999003") # Device JID
+    db.upsert_contact(jid="111222333444@lid", name="LID Person", phone_number="919999999004")                  # LID JID
+
+    # Test list_entities_with_roles with is_group=False
+    saved_contacts_res = db.list_entities_with_roles(is_group=False, search="999999900")
+    matching_jids = [c["jid"] for c in saved_contacts_res["items"]]
+    assert "919999999001@s.whatsapp.net" in matching_jids, "Saved contact must be listed"
+    assert "919999999002@s.whatsapp.net" not in matching_jids, "Unsaved raw phone formatted contact must be filtered out"
+    assert "919999999003:34@s.whatsapp.net" not in matching_jids, "Companion device JID must be filtered out"
+    assert "111222333444@lid" not in matching_jids, "LID JID must be filtered out"
+
+    # Test active_broadcast_progress state after sending broadcast
+    prog = bot.active_broadcast_progress
+    assert "status" in prog and "total" in prog and "percent" in prog
+    assert prog["status"] == "complete"
+    assert prog["percent"] == 100
+
+    # Test that broadcast messages are persisted in messages table
+    sent_in_db = db.get_chat_history("919000000001@s.whatsapp.net", limit=5)
+    assert len(sent_in_db) > 0, "Broadcast messages must be recorded in local messages table"
+    assert sent_in_db[0]["is_from_me"] == 1
+    print("   [OK] Saved contacts filtering, message persistence, and live progress state verified.")
+
     # Clean up test database
     if db_path.exists():
         db_path.unlink()
