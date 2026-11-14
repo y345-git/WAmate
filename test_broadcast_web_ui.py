@@ -22,9 +22,10 @@ class MockNeonizeClient:
         # Strict whatsmeow assertion
         if hasattr(to, "Device") and to.Device != 0:
             raise Exception("message recipient must be a user JID with no device part")
+        msg_idx = len(self.sent_messages) + 1
         self.sent_messages.append({"to": to, "message": message})
         class Resp:
-            ID = "MOCK_MSG_ID"
+            ID = f"MOCK_MSG_{msg_idx}"
         return Resp()
 
     def send_image(self, to, file, caption=""):

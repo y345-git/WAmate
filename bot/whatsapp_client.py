@@ -61,6 +61,8 @@ class WhatsAppBot:
         self.my_user_number = ""
         self.my_canonical_jid = ""
         self.my_non_ad_jid = None
+        self.my_lid_number = ""
+        self.my_lid_jid = ""
         self.last_self_chat_jid = None
         self.history_sync_completed = False
         self.active_broadcast_progress: dict[str, Any] = {
@@ -471,10 +473,11 @@ class WhatsAppBot:
     def get_self_chat_jid(self) -> Any:
         """Resolve a valid, device-clean recipient JID (Device=0) for sending messages into self-chat."""
         candidates = [
+            getattr(self, "my_lid_jid", None),
+            getattr(self, "last_self_chat_jid", None),
             f"{self.my_user_number}@s.whatsapp.net" if getattr(self, "my_user_number", "") else None,
             getattr(self, "my_canonical_jid", None),
             getattr(self, "my_non_ad_jid", None),
-            getattr(self, "last_self_chat_jid", None),
             getattr(self, "my_jid", None),
         ]
         for candidate in candidates:
@@ -487,6 +490,86 @@ class WhatsAppBot:
                         clean.RawAgent = 0
                     return clean
         return None
+
+    def resolve_destination_jid(self, target: Any) -> Any:
+        """Resolve a recipient (phone number, JID, or contact dict) to a device-clean JID ready for sending.
+        For modern WhatsApp multi-device accounts, automatically translates phone numbers to
+        their LID (@lid) using whatsmeow's store, ensuring active E2E encryption sessions are targeted.
+        """
+        if target is None:
+            return None
+        if isinstance(target, dict):
+            target = target.get("jid") or target.get("phone") or ""
+
+        target_str = str(target).strip()
+        if not target_str:
+            return None
+
+        # 1. Groups always use clean @g.us JID
+        if "@g.us" in target_str:
+            return clean_recipient_jid(target_str)
+
+        # 2. Self-chat routing (prioritize account LID)
+        dest_user = target_str.split("@")[0].split(":")[0]
+        digits = "".join(ch for ch in dest_user if ch.isdigit())
+        is_self = False
+        if getattr(self, "my_user_number", "") and (digits == self.my_user_number or dest_user == self.my_user_number):
+            is_self = True
+        elif getattr(self, "my_canonical_jid", "") and target_str.startswith(self.my_user_number):
+            is_self = True
+        elif getattr(self, "my_lid_number", "") and (digits == self.my_lid_number or dest_user == self.my_lid_number):
+            is_self = True
+
+        if is_self:
+            return self.get_self_chat_jid()
+
+        # 3. If already an @lid, clean and return
+        if "@lid" in target_str:
+            return clean_recipient_jid(target_str)
+
+        # 4. Lookup LID in whatsmeow_lid_map or via neonize client
+        resolved_lid = None
+        if digits and Path(self.session_db_path).exists():
+            try:
+                import sqlite3
+                with sqlite3.connect(self.session_db_path) as s_conn:
+                    row = s_conn.execute("SELECT lid FROM whatsmeow_lid_map WHERE pn = ?", (digits,)).fetchone()
+                    if row and row[0]:
+                        resolved_lid = clean_recipient_jid(f"{row[0]}@lid")
+            except Exception as e_map:
+                logger.debug("whatsmeow_lid_map lookup notice for %s: %s", digits, e_map)
+
+        if not resolved_lid and hasattr(self, "client") and hasattr(self.client, "get_lid_from_pn"):
+            try:
+                phone_jid = clean_recipient_jid(target_str)
+                if phone_jid:
+                    lid_jid = self.client.get_lid_from_pn(phone_jid)
+                    if lid_jid and getattr(lid_jid, "User", None):
+                        resolved_lid = clean_recipient_jid(lid_jid)
+            except Exception as e_lid:
+                logger.debug("client.get_lid_from_pn notice for %s: %s", target_str, e_lid)
+
+        # 5. If contact not in LID map, check if on WhatsApp to populate device/LID store
+        if not resolved_lid and digits and hasattr(self, "client") and hasattr(self.client, "is_on_whatsapp"):
+            try:
+                res_on_wa = self.client.is_on_whatsapp(digits)
+                if res_on_wa and len(res_on_wa) > 0 and getattr(res_on_wa[0], "IsIn", False):
+                    wa_jid = getattr(res_on_wa[0], "JID", None)
+                    if wa_jid and getattr(wa_jid, "Server", "") == "lid":
+                        resolved_lid = clean_recipient_jid(wa_jid)
+                    elif Path(self.session_db_path).exists():
+                        import sqlite3
+                        with sqlite3.connect(self.session_db_path) as s_conn:
+                            row2 = s_conn.execute("SELECT lid FROM whatsmeow_lid_map WHERE pn = ?", (digits,)).fetchone()
+                            if row2 and row2[0]:
+                                resolved_lid = clean_recipient_jid(f"{row2[0]}@lid")
+            except Exception as e_on_wa:
+                logger.debug("is_on_whatsapp lookup notice for %s: %s", digits, e_on_wa)
+
+        if resolved_lid:
+            return resolved_lid
+
+        return clean_recipient_jid(target_str)
 
     def _begin_query(self) -> None:
         with self._query_state_lock:
@@ -1345,7 +1428,6 @@ class WhatsAppBot:
                 continue
 
             raw_jid = rec.get("jid") or rec.get("phone") or ""
-            dest = clean_recipient_jid(raw_jid)
             rec_name = rec.get("name") or rec.get("push_name") or rec.get("phone") or str(raw_jid)
             phone = rec.get("phone") or ""
 
@@ -1353,7 +1435,10 @@ class WhatsAppBot:
             self.active_broadcast_progress["current_recipient"] = rec_name
             self.active_broadcast_progress["percent"] = int((idx / max(1, total)) * 100)
 
-            if not dest:
+            # Resolve to active E2E encryption destination (translates to @lid for users with multi-device sessions)
+            target_dest = self.resolve_destination_jid(rec)
+
+            if not target_dest:
                 log_entry = {
                     "jid": str(raw_jid),
                     "name": rec_name,
@@ -1367,17 +1452,6 @@ class WhatsAppBot:
                 self.active_broadcast_progress["failed_count"] = failed_count
                 self.active_broadcast_progress["logs"].append(log_entry)
                 continue
-
-            # Route to self-chat if recipient is the bot user themselves
-            dest_user = getattr(dest, "User", "") or str(raw_jid).split("@")[0].split(":")[0]
-            dest_phone = phone or dest_user
-            is_self = False
-            if getattr(self, "my_user_number", "") and (dest_phone == self.my_user_number or dest_user == self.my_user_number):
-                is_self = True
-            elif getattr(self, "my_canonical_jid", "") and (str(raw_jid).startswith(self.my_user_number) or dest_user == self.my_user_number):
-                is_self = True
-
-            target_dest = (self.get_self_chat_jid() or dest) if is_self else dest
 
             try:
                 resp = None
@@ -1411,28 +1485,29 @@ class WhatsAppBot:
 
                 # Persist sent broadcast message into local messages database
                 try:
-                    target_chat_jid = str(raw_jid)
-                    if "@" not in target_chat_jid:
-                        target_chat_jid = f"{target_chat_jid}@s.whatsapp.net"
-                    if is_self and getattr(self, "my_canonical_jid", ""):
-                        target_chat_jid = self.my_canonical_jid
+                    chat_jid_to_record = str(raw_jid)
+                    if target_dest and hasattr(target_dest, "User") and getattr(target_dest, "Server", "") == "lid":
+                        chat_jid_to_record = f"{target_dest.User}@lid"
+                    elif "@" not in chat_jid_to_record:
+                        chat_jid_to_record = f"{chat_jid_to_record}@s.whatsapp.net"
+
                     self.db.insert_message(
                         msg_id=msg_id,
-                        chat_jid=target_chat_jid,
+                        chat_jid=chat_jid_to_record,
                         chat_name=rec_name,
-                        sender_jid=self.my_canonical_jid or "me",
+                        sender_jid=getattr(self, "my_lid_jid", "") or getattr(self, "my_canonical_jid", "") or "me",
                         sender_name="You",
                         text=msg_text,
                         timestamp=int(time.time()),
                         is_from_me=True,
-                        is_group="@g.us" in target_chat_jid,
+                        is_group="@g.us" in chat_jid_to_record,
                         media_type="text" if not att_path else mime.split("/")[0],
                         media_filename=fname if att_path else "",
                         media_mimetype=mime if att_path else "",
                         media_size=att_path.stat().st_size if att_path and att_path.exists() else 0,
                     )
                 except Exception as e_db:
-                    logger.debug("Broadcast local message insertion notice: %s", e_db)
+                    logger.warning("Broadcast local message insertion notice: %s", e_db)
 
                 sent_count += 1
                 log_entry = {
