@@ -1,7 +1,7 @@
 <div align="center">
 
 <a href="#why-wamate">
-  <img src="assets/banner.svg" alt="WAmate — WhatsApp Self-Chat AI Second Brain" width="100%" />
+  <img src="assets/banner.svg" alt="WAmate — WhatsApp Self-Chat AI Second Brain & Broadcast Studio" width="100%" />
 </a>
 
 <br /><br />
@@ -15,7 +15,7 @@
 
 <br />
 
-**[Quick Start](#-quick-start)** &nbsp;&middot;&nbsp; **[Web UI](#-web-second-brain-ui)** &nbsp;&middot;&nbsp; **[Commands](#-commands)** &nbsp;&middot;&nbsp; **[Docker](#-docker)** &nbsp;&middot;&nbsp; **[Privacy](#-architecture--privacy)**
+**[Quick Start](#-quick-start)** &nbsp;&middot;&nbsp; **[Web Studio](#-web-second-brain--campaign-studio)** &nbsp;&middot;&nbsp; **[Commands](#-commands)** &nbsp;&middot;&nbsp; **[Docker](#-docker)** &nbsp;&middot;&nbsp; **[Privacy](#-architecture--privacy)**
 
 </div>
 
@@ -23,37 +23,37 @@
 
 ## Why WAmate?
 
-WhatsApp search forgets context, expires files after ~30 days, hides deleted messages, and cannot read inside receipts, voice notes, or PDFs. **WAmate** turns your **"Message yourself"** chat into a local, searchable AI second brain — without ever messaging external chats.
+WhatsApp search forgets context, expires files after ~30 days, hides deleted messages, and lacks segmented broadcast tools. **WAmate** transforms your personal WhatsApp into a private AI second brain and campaign powerhouse — indexing everything locally while keeping your personal self-chat as your primary command center.
 
 <table>
   <tr>
     <td width="50%" valign="top">
-      <h4>🔒 100% Self-Chat Isolated</h4>
-      <p>Triggers exclusively on your own messages in <b>"Message yourself"</b>. External DMs and groups stay strictly read-only.</p>
+      <h4>🔒 100% Self-Chat Command Center</h4>
+      <p>Triggers exclusively on your own messages in <b>"Message yourself"</b>. External DMs and group chats remain strictly read-only.</p>
     </td>
     <td width="50%" valign="top">
       <h4>⚡ Multimodal Gemini + Key Rotation</h4>
-      <p>Reads photos, receipts, voice notes, PDFs, Office docs, and shared URLs on demand — caching results in SQLite and auto-rotating <code>GEMINI_API_KEYS</code> on <code>429</code> limits.</p>
+      <p>Reads photos, receipts, voice notes, PDFs, and URLs on demand — caching results in SQLite with auto-rotation across <code>GEMINI_API_KEYS</code> on quota limits.</p>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <h4>📢 Role-Based Broadcasts &amp; Live Tracking</h4>
+      <p>Segment contacts and groups by custom colored roles (<i>VIP, Clients, Family</i>). Send personalized messages (<code>{name}</code>) with anti-spam pacing and a live delivery progress feed.</p>
+    </td>
+    <td width="50%" valign="top">
+      <h4>⏱️ Scheduled Messages &amp; Excel Sync</h4>
+      <p>Plan future broadcasts with background cron dispatching. Full backup &amp; restore of contacts, groups, and role mappings via multi-sheet <code>.xlsx</code> workbooks.</p>
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top">
       <h4>💾 30-Day Media Vault &amp; Zero-API Index</h4>
-      <p>Auto-saves media locally with SHA-256 deduplication, indexes documents in Python (<code>ENABLE_LOCAL_DOC_INDEX</code>), and supports optional free CPU OCR via <code>tesseract</code>.</p>
+      <p>Auto-downloads media with SHA-256 deduplication, indexes documents in pure Python (<code>ENABLE_LOCAL_DOC_INDEX</code>), and supports optional free local OCR via <code>tesseract</code>.</p>
     </td>
     <td width="50%" valign="top">
       <h4>🛡️ Anti-Delete &amp; Edit Vault</h4>
-      <p>Captures real-time Delete-for-Everyone (<code>REVOKE</code>) events and message edits, preserving original wording, timelines, and downloaded media.</p>
-    </td>
-  </tr>
-  <tr>
-    <td width="50%" valign="top">
-      <h4>🌐 Dark Web Explorer UI</h4>
-      <p>Browse chats by phone/contact or date range, preview video thumbnails, trigger <b>Ask AI</b> on any item, or push files straight to WhatsApp with <b>Send to WA</b>.</p>
-    </td>
-    <td width="50%" valign="top">
-      <h4>↩️ Context Memory &amp; Swipe-Replies</h4>
-      <p>Follow-ups work naturally across turns. Swipe-reply to any photo, PDF, or voice note with <code>!ask</code> or <code>!get</code> to act on that exact item.</p>
+      <p>Captures real-time Delete-for-Everyone (<code>REVOKE</code>) events and message edits, preserving original text, timelines, and media files.</p>
     </td>
   </tr>
 </table>
@@ -76,14 +76,17 @@ WAmate: 🛡️ 1. 🗑️ Deleted — Alex (14:22) • Original: "Hold off on s
 
 ---
 
-## 🌐 Web Second Brain UI
+## 🌐 Web Second Brain & Campaign Studio
 
-Run WAmate (or launch standalone with `python3 main.py --web-only`) and open **`http://127.0.0.1:8765`**:
+Launch WAmate (or run standalone via `python3 main.py --web-only`) and visit **`http://127.0.0.1:8765`**:
 
-- **Search & Media Vault** — FTS5 + OCR search across messages and phone numbers (`@lid` resolved), `From`/`To` date presets (`Today`, `7d`, `30d`), video thumbnails, and document text previews.
-- **Anti-Delete Vault** — Clean view of deleted and edited messages (WhatsApp Status broadcasts filtered out by default).
-- **One-Click Actions** — Click **Ask AI** on any card, bubble, or preview modal to attach it as context, or **Send to WA** to deliver it directly to your self-chat.
-- **Persistent AI Workspace** — Clean markdown Q&A backed by SQLite history (`web_ai_history`) and dark cookie-based login when `WEB_UI_PASSWORD` is set.
+- **Search & Media Vault** — Tokenized FTS5 + OCR search across messages and phone numbers (`@lid` resolved), date filters (`Today`, `7d`, `30d`), video thumbnails, and PDF/doc previews.
+- **Anti-Delete Vault** — Real-time log of deleted and edited messages (status broadcasts filtered out).
+- **Broadcast & Campaign Manager** — Filter audience by scope (*All, Contacts Only, Groups Only*) and custom tags. Supports `{name}` personalization, file attachments, and safe delivery pacing (1.0s – 2.5s jitter).
+- **Live Delivery Modal** — Real-time progress bar with per-recipient status feed (timestamp, success checkmarks, and failure details).
+- **Scheduled Dispatcher** — Schedule campaigns for any future date/time with automatic background dispatching.
+- **Excel Backup & Restore** — Export and import your entire address book, groups, and color-coded role tags using formatted `.xlsx` workbooks (Merge or Replace modes).
+- **One-Click Actions** — Click **Ask AI** on any bubble or card to query Gemini, or **Send to WA** to push items straight into your WhatsApp self-chat.
 
 <details>
 <summary><b>Remote VPS Access (SSH Tunnel or Password Auth)</b></summary>
@@ -117,9 +120,9 @@ Add your essentials to `.env` (see [`.env.example`](.env.example) for all flags)
 
 ```ini
 GEMINI_API_KEY=AIzaSy...        # Or GEMINI_API_KEYS=key1,key2 for 429 quota rotation
-TZ=Asia/Kolkata                 # Local timezone for "today", "yesterday" & date filters
+TZ=Asia/Kolkata                 # Local timezone for "today", "yesterday" & scheduling
 PHONE_NUMBER=                   # Blank = QR scan; E.164 digits = 8-character pairing code
-WEB_UI_PASSWORD=                # Recommended if accessing the Web UI off localhost
+WEB_UI_PASSWORD=                # Set password to protect Web UI on external IPs
 ```
 
 Start WAmate and scan the QR code (**WhatsApp &rarr; Linked Devices &rarr; Link a Device**):
@@ -171,19 +174,20 @@ docker compose down            # Stop container
 
 ```mermaid
 flowchart LR
-    WA["WhatsApp (Neonize)"] -->|"Batch Sync & Live Events"| DB[("SQLite + FTS5\nmessages • contacts • media_ocr_cache\nmessage_revisions • web_ai_history")]
-    WA <-->|"Self-Chat Commands & Media"| Bot["WhatsAppBot + Workers\n(Media Vault • Local OCR/Doc Index)"]
+    WA["WhatsApp (Neonize)"] -->|"Batch Sync & Live Events"| DB[("SQLite + FTS5\nmessages • contacts • media_ocr_cache\nmessage_revisions • web_ai_history\ncustom_roles • scheduled_campaigns")]
+    WA <-->|"Self-Chat Commands & Media"| Bot["WhatsAppBot + Workers\n(Media Vault • Local OCR/Doc Index • Dispatcher)"]
     Bot --> Agent["GeminiAgent (Tool Calling + Memory)"]
     Web["WebUIServer (:8765)"] <--> DB
     Web <--> Agent
-    Web -.->|"Send to WA"| Bot
+    Web -.->|"Send to WA & Broadcasts"| Bot
     Agent <--> DB
 ```
 
 </details>
 
 - **Local-First:** Chat history, contacts, cached OCR/transcripts, and media stay on your disk in `./data`. Only the specific context inspected during an `!ask` query goes to Gemini.
-- **Strictly Read-Only Elsewhere:** External 1-on-1 and group chats are indexed locally and never receive automated messages.
+- **Strictly Read-Only Elsewhere:** External 1-on-1 and group chats are indexed locally and never receive automated messages unless explicitly broadcasted by you from the Web UI.
+- **Delivery Safety:** Broadcasts enforce LID session resolution and configurable randomized delay pacing (1.0s – 2.5s) to avoid spam flags.
 - **Locked-Down Web UI:** Binds to `127.0.0.1` by default, blocks path traversal outside `DOWNLOADS_DIR`, and protects access with `HttpOnly` signed cookies when `WEB_UI_PASSWORD` is configured.
 
 ---
