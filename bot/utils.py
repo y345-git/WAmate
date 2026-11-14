@@ -102,6 +102,8 @@ def clean_recipient_jid(dest: Any) -> Any:
         user = getattr(cleaned, "User", "")
         if ":" in user:
             cleaned.User = user.split(":", 1)[0]
+        if "." in cleaned.User and getattr(cleaned, "Server", "") != "g.us":
+            cleaned.User = cleaned.User.split(".", 1)[0]
         return cleaned
 
     s = str(dest).strip()

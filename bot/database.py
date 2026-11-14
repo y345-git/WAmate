@@ -4,6 +4,7 @@ import logging
 import re
 import threading
 import time
+import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -291,6 +292,95 @@ class DatabaseManager:
                 );
                 """
             )
+
+            # Schema migration check for contacts table (e.g. notes)
+            contact_cols = [c["name"] for c in conn.execute("PRAGMA table_info(contacts)").fetchall()]
+            if "notes" not in contact_cols:
+                conn.execute("ALTER TABLE contacts ADD COLUMN notes TEXT DEFAULT '';")
+
+            # 8. Broadcast Roles Table
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS roles (
+                    name TEXT PRIMARY KEY,
+                    color TEXT DEFAULT '',
+                    created_at INTEGER
+                );
+                """
+            )
+
+            # 9. Entity Roles Mapping (Contacts & Groups)
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS entity_roles (
+                    jid TEXT NOT NULL,
+                    role TEXT NOT NULL,
+                    created_at INTEGER,
+                    PRIMARY KEY (jid, role)
+                );
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_entity_roles_jid ON entity_roles(jid);")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_entity_roles_role ON entity_roles(role);")
+
+            # 10. Scheduled Campaigns Planner
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS scheduled_campaigns (
+                    id TEXT PRIMARY KEY,
+                    message TEXT,
+                    attachment_path TEXT DEFAULT '',
+                    attachment_filename TEXT DEFAULT '',
+                    attachment_mimetype TEXT DEFAULT '',
+                    target_audience TEXT DEFAULT 'both',
+                    roles TEXT DEFAULT '[]',
+                    specific_recipients TEXT DEFAULT '[]',
+                    scheduled_time TEXT NOT NULL,
+                    scheduled_ts INTEGER NOT NULL,
+                    status TEXT DEFAULT 'pending',
+                    created_at INTEGER,
+                    sent_at INTEGER DEFAULT 0,
+                    total_targets INTEGER DEFAULT 0,
+                    sent_count INTEGER DEFAULT 0,
+                    failed_count INTEGER DEFAULT 0,
+                    log_details TEXT DEFAULT '[]'
+                );
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_sched_status_ts ON scheduled_campaigns(status, scheduled_ts);")
+
+            # 11. Broadcast Campaign Delivery History Logs
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS campaign_history (
+                    id TEXT PRIMARY KEY,
+                    campaign_type TEXT DEFAULT 'instant',
+                    message TEXT,
+                    attachment_path TEXT DEFAULT '',
+                    attachment_filename TEXT DEFAULT '',
+                    roles TEXT DEFAULT '[]',
+                    target_audience TEXT DEFAULT 'both',
+                    recipients_count INTEGER DEFAULT 0,
+                    sent_count INTEGER DEFAULT 0,
+                    failed_count INTEGER DEFAULT 0,
+                    duration_sec REAL DEFAULT 0,
+                    started_at INTEGER,
+                    finished_at INTEGER,
+                    logs TEXT DEFAULT '[]'
+                );
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_camp_hist_started ON campaign_history(started_at DESC);")
+
+            # Seed initial default roles if none exist
+            try:
+                existing_roles_cnt = conn.execute("SELECT COUNT(*) FROM roles").fetchone()[0]
+                if existing_roles_cnt == 0:
+                    init_ts = int(time.time())
+                    for def_role in ("Friends", "Business", "Nature", "Family", "Clients", "VIP"):
+                        conn.execute("INSERT OR IGNORE INTO roles (name, color, created_at) VALUES (?, '', ?)", (def_role, init_ts))
+            except Exception as re_err:
+                logger.debug("Default roles seed skipped: %s", re_err)
 
             conn.commit()
             logger.info("Database initialized successfully at %s", self.db_path)
@@ -2779,3 +2869,727 @@ class DatabaseManager:
             cur = conn.execute("DELETE FROM web_ai_history")
             conn.commit()
             return int(cur.rowcount or 0)
+
+    # =========================================================================
+    # Role-Based Messaging, Scheduling, and Contact/Group Roles
+    # =========================================================================
+
+    def get_roles(self) -> list[dict[str, Any]]:
+        """Return all defined broadcast roles with their assigned recipient counts."""
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT r.name, r.color, r.created_at, COUNT(er.jid) as count
+                FROM roles r
+                LEFT JOIN entity_roles er ON r.name = er.role
+                GROUP BY r.name
+                ORDER BY r.name COLLATE NOCASE ASC
+                """
+            ).fetchall()
+            return [
+                {
+                    "name": r["name"],
+                    "color": r["color"] or "",
+                    "created_at": int(r["created_at"] or 0),
+                    "count": int(r["count"] or 0),
+                }
+                for r in rows
+            ]
+
+    def add_role(self, name: str, color: str = "") -> bool:
+        """Create a new role tag."""
+        role_name = (name or "").strip()
+        if not role_name:
+            return False
+        with self._get_connection() as conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO roles (name, color, created_at) VALUES (?, ?, ?)",
+                (role_name, (color or "").strip(), int(time.time())),
+            )
+            conn.commit()
+            return True
+
+    def delete_role(self, name: str) -> bool:
+        """Delete a role and unassign it from all contacts and groups."""
+        role_name = (name or "").strip()
+        if not role_name:
+            return False
+        with self._get_connection() as conn:
+            conn.execute("DELETE FROM roles WHERE LOWER(name) = LOWER(?)", (role_name,))
+            conn.execute("DELETE FROM entity_roles WHERE LOWER(role) = LOWER(?)", (role_name,))
+            conn.commit()
+            return True
+
+    def get_entity_roles(self, jid: str) -> list[str]:
+        """Get list of roles assigned to a contact or group."""
+        if not jid:
+            return []
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                "SELECT role FROM entity_roles WHERE jid = ? ORDER BY role COLLATE NOCASE ASC",
+                (jid.strip(),),
+            ).fetchall()
+            return [r["role"] for r in rows]
+
+    def set_entity_roles(self, jid: str, roles: list[str]) -> bool:
+        """Replace all assigned roles for a contact or group."""
+        clean_jid = (jid or "").strip()
+        if not clean_jid:
+            return False
+        now_ts = int(time.time())
+        unique_roles = {r.strip() for r in roles if r and r.strip()}
+        with self._get_connection() as conn:
+            conn.execute("DELETE FROM entity_roles WHERE jid = ?", (clean_jid,))
+            for r in unique_roles:
+                # Ensure role exists in roles table
+                conn.execute(
+                    "INSERT OR IGNORE INTO roles (name, color, created_at) VALUES (?, '', ?)",
+                    (r, now_ts),
+                )
+                conn.execute(
+                    "INSERT OR IGNORE INTO entity_roles (jid, role, created_at) VALUES (?, ?, ?)",
+                    (clean_jid, r, now_ts),
+                )
+            conn.commit()
+            return True
+
+    def save_contact_with_roles(
+        self,
+        jid: str,
+        name: str = "",
+        phone_number: str = "",
+        roles: list[str] | None = None,
+        notes: str = "",
+        is_group: bool = False,
+    ) -> bool:
+        """Create or update a contact or group record with assigned roles and notes."""
+        clean_jid = (jid or "").strip()
+        if not clean_jid:
+            return False
+        now_ts = int(time.time())
+        with self._get_connection() as conn:
+            existing = conn.execute("SELECT jid, name, phone_number, is_group, notes FROM contacts WHERE jid = ?", (clean_jid,)).fetchone()
+            if existing:
+                conn.execute(
+                    """
+                    UPDATE contacts
+                    SET name = CASE WHEN ? != '' THEN ? ELSE name END,
+                        phone_number = CASE WHEN ? != '' THEN ? ELSE phone_number END,
+                        notes = ?,
+                        updated_at = ?
+                    WHERE jid = ?
+                    """,
+                    (name.strip(), name.strip(), phone_number.strip(), phone_number.strip(), (notes or "").strip(), now_ts, clean_jid),
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO contacts (jid, name, push_name, phone_number, is_group, notes, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (clean_jid, name.strip() or None, None, phone_number.strip() or None, 1 if is_group else 0, (notes or "").strip(), now_ts),
+                )
+            conn.commit()
+
+        if roles is not None:
+            self.set_entity_roles(clean_jid, roles)
+        return True
+
+    def delete_custom_contact(self, jid: str) -> bool:
+        """Remove a custom contact and its role mappings."""
+        clean_jid = (jid or "").strip()
+        if not clean_jid:
+            return False
+        with self._get_connection() as conn:
+            conn.execute("DELETE FROM contacts WHERE jid = ?", (clean_jid,))
+            conn.execute("DELETE FROM entity_roles WHERE jid = ?", (clean_jid,))
+            conn.commit()
+            return True
+
+    def list_entities_with_roles(
+        self,
+        is_group: bool | None = None,
+        search: str = "",
+        role: str = "",
+        limit: int = 50,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        """List contacts or groups with assigned roles, notes, and search/filter support."""
+        where = ["c.jid != 'status@broadcast'"]
+        params: list[Any] = []
+
+        if is_group is not None:
+            where.append("c.is_group = ?")
+            params.append(1 if is_group else 0)
+
+        clean_search = (search or "").strip().lower()
+        if clean_search:
+            pattern = f"%{clean_search}%"
+            where.append(
+                "(LOWER(COALESCE(c.name, '')) LIKE ? OR LOWER(COALESCE(c.push_name, '')) LIKE ? "
+                "OR LOWER(COALESCE(c.phone_number, '')) LIKE ? OR LOWER(c.jid) LIKE ? "
+                "OR LOWER(COALESCE(c.notes, '')) LIKE ?)"
+            )
+            params.extend([pattern, pattern, pattern, pattern, pattern])
+
+        clean_role = (role or "").strip()
+        if clean_role:
+            where.append("c.jid IN (SELECT jid FROM entity_roles WHERE LOWER(role) = LOWER(?))")
+            params.append(clean_role)
+
+        where_sql = " WHERE " + " AND ".join(where)
+
+        with self._get_connection() as conn:
+            count_row = conn.execute(f"SELECT COUNT(*) FROM contacts c{where_sql}", tuple(params)).fetchone()
+            total = count_row[0] if count_row else 0
+
+            query_sql = f"""
+                SELECT c.jid, c.name, c.push_name, c.phone_number, c.is_group, c.notes,
+                       (SELECT GROUP_CONCAT(er.role, ',') FROM (SELECT role FROM entity_roles WHERE jid = c.jid ORDER BY role COLLATE NOCASE) er) as roles
+                FROM contacts c
+                {where_sql}
+                ORDER BY COALESCE(NULLIF(c.name, ''), NULLIF(c.push_name, ''), c.phone_number, c.jid) COLLATE NOCASE ASC
+                LIMIT ? OFFSET ?
+            """
+            rows = conn.execute(query_sql, tuple(params + [max(1, int(limit)), max(0, int(offset))])).fetchall()
+
+            items = []
+            for r in rows:
+                raw_roles = (r["roles"] or "").strip()
+                roles_list = [x.strip() for x in raw_roles.split(",") if x.strip()]
+                display_name = r["name"] or r["push_name"] or r["phone_number"] or r["jid"]
+                items.append({
+                    "jid": r["jid"],
+                    "name": display_name,
+                    "phone": r["phone_number"] or "",
+                    "push_name": r["push_name"] or "",
+                    "is_group": bool(r["is_group"]),
+                    "notes": r["notes"] or "",
+                    "roles": roles_list,
+                })
+
+            return {
+                "items": items,
+                "total": total,
+                "limit": limit,
+                "offset": offset,
+            }
+
+    def lookup_recipients_by_roles(
+        self,
+        roles: list[str],
+        target_audience: str = "both",
+    ) -> list[dict[str, Any]]:
+        """Resolve all distinct contacts/groups matching any of the specified roles and target audience."""
+        clean_roles = [r.strip() for r in roles if r and r.strip()]
+        if not clean_roles:
+            return []
+
+        placeholders = ",".join("?" for _ in clean_roles)
+        audience = (target_audience or "both").lower()
+
+        where_extra = ""
+        extra_params: list[Any] = []
+        if audience == "contacts":
+            where_extra = "AND c.is_group = 0"
+        elif audience == "groups":
+            where_extra = "AND c.is_group = 1"
+
+        query = f"""
+            SELECT c.jid, c.name, c.push_name, c.phone_number, c.is_group,
+                   GROUP_CONCAT(DISTINCT er.role) as roles
+            FROM contacts c
+            JOIN entity_roles er ON c.jid = er.jid
+            WHERE c.jid != 'status@broadcast'
+              AND er.role IN ({placeholders})
+              {where_extra}
+            GROUP BY c.jid
+            ORDER BY COALESCE(NULLIF(c.name, ''), NULLIF(c.push_name, ''), c.phone_number, c.jid) COLLATE NOCASE ASC
+        """
+
+        with self._get_connection() as conn:
+            rows = conn.execute(query, tuple(clean_roles + extra_params)).fetchall()
+            out = []
+            for r in rows:
+                roles_arr = [x.strip() for x in (r["roles"] or "").split(",") if x.strip()]
+                out.append({
+                    "jid": r["jid"],
+                    "name": r["name"] or r["push_name"] or r["phone_number"] or r["jid"],
+                    "phone": r["phone_number"] or "",
+                    "is_group": bool(r["is_group"]),
+                    "roles": roles_arr,
+                })
+            return out
+
+    def lookup_recipients_autocomplete(self, query: str = "", limit: int = 25) -> list[dict[str, Any]]:
+        """Search contacts and groups for the specific recipients picker dropdown."""
+        q = (query or "").strip().lower()
+        params: list[Any] = []
+        where = "WHERE c.jid != 'status@broadcast'"
+        if q:
+            pattern = f"%{q}%"
+            where += " AND (LOWER(COALESCE(c.name, '')) LIKE ? OR LOWER(COALESCE(c.push_name, '')) LIKE ? OR LOWER(COALESCE(c.phone_number, '')) LIKE ? OR LOWER(c.jid) LIKE ?)"
+            params.extend([pattern, pattern, pattern, pattern])
+
+        sql = f"""
+            SELECT c.jid, c.name, c.push_name, c.phone_number, c.is_group,
+                   (SELECT GROUP_CONCAT(er.role, ',') FROM entity_roles er WHERE er.jid = c.jid) as roles
+            FROM contacts c
+            {where}
+            ORDER BY COALESCE(NULLIF(c.name, ''), NULLIF(c.push_name, ''), c.phone_number, c.jid) COLLATE NOCASE ASC
+            LIMIT ?
+        """
+        params.append(max(1, int(limit)))
+
+        with self._get_connection() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+            out = []
+            for r in rows:
+                roles_arr = [x.strip() for x in (r["roles"] or "").split(",") if x.strip()]
+                name = r["name"] or r["push_name"] or r["phone_number"] or r["jid"]
+                out.append({
+                    "jid": r["jid"],
+                    "name": name,
+                    "phone": r["phone_number"] or "",
+                    "is_group": bool(r["is_group"]),
+                    "type": "group" if r["is_group"] else "contact",
+                    "roles": roles_arr,
+                })
+            return out
+
+    def create_scheduled_campaign(
+        self,
+        message: str,
+        scheduled_time: str,
+        scheduled_ts: int,
+        target_audience: str = "both",
+        roles: list[str] | None = None,
+        specific_recipients: list[dict[str, Any]] | None = None,
+        attachment_path: str = "",
+        attachment_filename: str = "",
+        attachment_mimetype: str = "",
+    ) -> str:
+        """Register a future scheduled campaign in SQLite."""
+        camp_id = f"sched_{datetime.now().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:6]}"
+        now_ts = int(time.time())
+        roles_json = json.dumps(roles or [])
+        recipients_json = json.dumps(specific_recipients or [])
+
+        with self._get_connection() as conn:
+            conn.execute(
+                """
+                INSERT INTO scheduled_campaigns (
+                    id, message, attachment_path, attachment_filename, attachment_mimetype,
+                    target_audience, roles, specific_recipients, scheduled_time, scheduled_ts,
+                    status, created_at, sent_at, total_targets, sent_count, failed_count, log_details
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, 0, 0, 0, 0, '[]')
+                """,
+                (
+                    camp_id,
+                    (message or "").strip(),
+                    (attachment_path or "").strip(),
+                    (attachment_filename or "").strip(),
+                    (attachment_mimetype or "").strip(),
+                    (target_audience or "both").strip(),
+                    roles_json,
+                    recipients_json,
+                    (scheduled_time or "").strip(),
+                    int(scheduled_ts),
+                    now_ts,
+                ),
+            )
+            conn.commit()
+            return camp_id
+
+    def get_scheduled_campaigns(self, status: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+        """List scheduled campaigns sorted by scheduled time."""
+        params: list[Any] = []
+        where = ""
+        if status:
+            where = "WHERE status = ?"
+            params.append(status.strip())
+
+        sql = f"""
+            SELECT id, message, attachment_path, attachment_filename, attachment_mimetype,
+                   target_audience, roles, specific_recipients, scheduled_time, scheduled_ts,
+                   status, created_at, sent_at, total_targets, sent_count, failed_count, log_details
+            FROM scheduled_campaigns
+            {where}
+            ORDER BY CASE WHEN status = 'pending' THEN 0 ELSE 1 END, scheduled_ts ASC
+            LIMIT ?
+        """
+        params.append(max(1, int(limit)))
+
+        with self._get_connection() as conn:
+            rows = conn.execute(sql, tuple(params)).fetchall()
+            out = []
+            for r in rows:
+                try:
+                    roles_list = json.loads(r["roles"] or "[]")
+                except Exception:
+                    roles_list = []
+                try:
+                    recipients_list = json.loads(r["specific_recipients"] or "[]")
+                except Exception:
+                    recipients_list = []
+                try:
+                    logs_list = json.loads(r["log_details"] or "[]")
+                except Exception:
+                    logs_list = []
+
+                out.append({
+                    "id": r["id"],
+                    "message": r["message"] or "",
+                    "attachment_path": r["attachment_path"] or "",
+                    "attachment_name": r["attachment_filename"] or "",
+                    "attachment_mimetype": r["attachment_mimetype"] or "",
+                    "target_audience": r["target_audience"] or "both",
+                    "roles": roles_list,
+                    "specific_recipients": recipients_list,
+                    "scheduled_time": r["scheduled_time"] or "",
+                    "scheduled_ts": int(r["scheduled_ts"] or 0),
+                    "status": r["status"] or "pending",
+                    "created_at": int(r["created_at"] or 0),
+                    "sent_at": int(r["sent_at"] or 0),
+                    "total_targets": int(r["total_targets"] or 0),
+                    "sent_count": int(r["sent_count"] or 0),
+                    "failed_count": int(r["failed_count"] or 0),
+                    "logs": logs_list,
+                })
+            return out
+
+    def get_scheduled_campaign(self, camp_id: str) -> dict[str, Any] | None:
+        """Get single scheduled campaign by ID."""
+        if not camp_id:
+            return None
+        with self._get_connection() as conn:
+            row = conn.execute(
+                """
+                SELECT id, message, attachment_path, attachment_filename, attachment_mimetype,
+                       target_audience, roles, specific_recipients, scheduled_time, scheduled_ts,
+                       status, created_at, sent_at, total_targets, sent_count, failed_count, log_details
+                FROM scheduled_campaigns
+                WHERE id = ?
+                """,
+                (camp_id.strip(),),
+            ).fetchone()
+            if not row:
+                return None
+            return {
+                "id": row["id"],
+                "message": row["message"] or "",
+                "attachment_path": row["attachment_path"] or "",
+                "attachment_name": row["attachment_filename"] or "",
+                "attachment_mimetype": row["attachment_mimetype"] or "",
+                "target_audience": row["target_audience"] or "both",
+                "roles": json.loads(row["roles"] or "[]"),
+                "specific_recipients": json.loads(row["specific_recipients"] or "[]"),
+                "scheduled_time": row["scheduled_time"] or "",
+                "scheduled_ts": int(row["scheduled_ts"] or 0),
+                "status": row["status"] or "pending",
+                "created_at": int(row["created_at"] or 0),
+                "sent_at": int(row["sent_at"] or 0),
+                "total_targets": int(row["total_targets"] or 0),
+                "sent_count": int(row["sent_count"] or 0),
+                "failed_count": int(row["failed_count"] or 0),
+                "logs": json.loads(row["log_details"] or "[]"),
+            }
+
+    def get_due_scheduled_campaigns(self, now_ts: int | None = None) -> list[dict[str, Any]]:
+        """Fetch pending campaigns whose scheduled timestamp has arrived."""
+        ts = int(time.time()) if now_ts is None else int(now_ts)
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, message, attachment_path, attachment_filename, attachment_mimetype,
+                       target_audience, roles, specific_recipients, scheduled_time, scheduled_ts,
+                       status, created_at, sent_at, total_targets, sent_count, failed_count, log_details
+                FROM scheduled_campaigns
+                WHERE status = 'pending' AND scheduled_ts <= ?
+                ORDER BY scheduled_ts ASC
+                """,
+                (ts,),
+            ).fetchall()
+            out = []
+            for row in rows:
+                out.append({
+                    "id": row["id"],
+                    "message": row["message"] or "",
+                    "attachment_path": row["attachment_path"] or "",
+                    "attachment_name": row["attachment_filename"] or "",
+                    "attachment_mimetype": row["attachment_mimetype"] or "",
+                    "target_audience": row["target_audience"] or "both",
+                    "roles": json.loads(row["roles"] or "[]"),
+                    "specific_recipients": json.loads(row["specific_recipients"] or "[]"),
+                    "scheduled_time": row["scheduled_time"] or "",
+                    "scheduled_ts": int(row["scheduled_ts"] or 0),
+                    "status": row["status"] or "pending",
+                })
+            return out
+
+    def update_scheduled_campaign_status(
+        self,
+        camp_id: str,
+        status: str,
+        sent_count: int = 0,
+        failed_count: int = 0,
+        total_targets: int = 0,
+        logs: list[dict[str, Any]] | None = None,
+    ) -> bool:
+        """Update campaign execution state and delivery counts."""
+        now_ts = int(time.time())
+        logs_json = json.dumps(logs or [])
+        with self._get_connection() as conn:
+            conn.execute(
+                """
+                UPDATE scheduled_campaigns
+                SET status = ?,
+                    sent_count = ?,
+                    failed_count = ?,
+                    total_targets = ?,
+                    log_details = ?,
+                    sent_at = CASE WHEN ? IN ('sent', 'failed') THEN ? ELSE sent_at END
+                WHERE id = ?
+                """,
+                (
+                    status,
+                    int(sent_count),
+                    int(failed_count),
+                    int(total_targets),
+                    logs_json,
+                    status,
+                    now_ts,
+                    camp_id,
+                ),
+            )
+            conn.commit()
+            return True
+
+    def cancel_scheduled_campaign(self, camp_id: str) -> bool:
+        """Cancel a pending scheduled campaign."""
+        with self._get_connection() as conn:
+            cur = conn.execute(
+                "UPDATE scheduled_campaigns SET status = 'cancelled' WHERE id = ? AND status = 'pending'",
+                (camp_id,),
+            )
+            conn.commit()
+            return bool(cur.rowcount > 0)
+
+    def delete_scheduled_campaign(self, camp_id: str) -> bool:
+        """Delete a campaign record from scheduled queue."""
+        with self._get_connection() as conn:
+            cur = conn.execute("DELETE FROM scheduled_campaigns WHERE id = ?", (camp_id,))
+            conn.commit()
+            return bool(cur.rowcount > 0)
+
+    def record_campaign_history(
+        self,
+        message: str,
+        target_audience: str,
+        roles: list[str],
+        recipients_count: int,
+        sent_count: int,
+        failed_count: int,
+        duration_sec: float,
+        started_at: int,
+        finished_at: int,
+        logs: list[dict[str, Any]],
+        attachment_path: str = "",
+        attachment_filename: str = "",
+        campaign_type: str = "instant",
+        camp_id: str | None = None,
+    ) -> str:
+        """Log a completed campaign in the audit history."""
+        cid = camp_id or f"camp_{datetime.now().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:6]}"
+        with self._get_connection() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO campaign_history (
+                    id, campaign_type, message, attachment_path, attachment_filename,
+                    roles, target_audience, recipients_count, sent_count, failed_count,
+                    duration_sec, started_at, finished_at, logs
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    cid,
+                    campaign_type,
+                    (message or "").strip(),
+                    attachment_path or "",
+                    attachment_filename or "",
+                    json.dumps(roles or []),
+                    target_audience or "both",
+                    int(recipients_count),
+                    int(sent_count),
+                    int(failed_count),
+                    round(float(duration_sec), 2),
+                    int(started_at),
+                    int(finished_at),
+                    json.dumps(logs or []),
+                ),
+            )
+            conn.commit()
+            return cid
+
+    def get_campaign_history(self, query: str = "", limit: int = 50, offset: int = 0) -> dict[str, Any]:
+        """Fetch past campaign execution records."""
+        q = (query or "").strip().lower()
+        where = ""
+        params: list[Any] = []
+        if q:
+            pattern = f"%{q}%"
+            where = "WHERE (LOWER(id) LIKE ? OR LOWER(message) LIKE ? OR LOWER(roles) LIKE ? OR LOWER(logs) LIKE ?)"
+            params.extend([pattern, pattern, pattern, pattern])
+
+        with self._get_connection() as conn:
+            count_row = conn.execute(f"SELECT COUNT(*) FROM campaign_history {where}", tuple(params)).fetchone()
+            total = count_row[0] if count_row else 0
+
+            sql = f"""
+                SELECT id, campaign_type, message, attachment_path, attachment_filename,
+                       roles, target_audience, recipients_count, sent_count, failed_count,
+                       duration_sec, started_at, finished_at, logs
+                FROM campaign_history
+                {where}
+                ORDER BY started_at DESC
+                LIMIT ? OFFSET ?
+            """
+            rows = conn.execute(sql, tuple(params + [max(1, int(limit)), max(0, int(offset))])).fetchall()
+            items = []
+            for r in rows:
+                try:
+                    roles_list = json.loads(r["roles"] or "[]")
+                except Exception:
+                    roles_list = []
+                try:
+                    logs_list = json.loads(r["logs"] or "[]")
+                except Exception:
+                    logs_list = []
+
+                items.append({
+                    "id": r["id"],
+                    "campaign_type": r["campaign_type"] or "instant",
+                    "message": r["message"] or "",
+                    "attachment_name": r["attachment_filename"] or "",
+                    "attachment_path": r["attachment_path"] or "",
+                    "roles": roles_list,
+                    "target_audience": r["target_audience"] or "both",
+                    "recipients_count": int(r["recipients_count"] or 0),
+                    "sent_count": int(r["sent_count"] or 0),
+                    "failed_count": int(r["failed_count"] or 0),
+                    "duration_sec": float(r["duration_sec"] or 0),
+                    "started_at": int(r["started_at"] or 0),
+                    "finished_at": int(r["finished_at"] or 0),
+                    "date_str": datetime.fromtimestamp(int(r["started_at"] or 0)).strftime("%Y-%m-%d %H:%M:%S"),
+                    "logs": logs_list,
+                })
+
+            return {"items": items, "total": total, "limit": limit, "offset": offset}
+
+    def export_workbook_data(self) -> dict[str, list[dict[str, Any]]]:
+        """Collect all Contacts, Groups, and Roles data for Excel workbook generation."""
+        contacts = self.list_entities_with_roles(is_group=False, limit=50000)["items"]
+        groups = self.list_entities_with_roles(is_group=True, limit=50000)["items"]
+        roles = self.get_roles()
+        return {
+            "contacts": contacts,
+            "groups": groups,
+            "roles": roles,
+        }
+
+    def import_workbook_data(
+        self,
+        contacts_or_dict: Any,
+        groups_rows: list[dict[str, Any]] | None = None,
+        roles_names: list[str] | None = None,
+        import_action: str = "merge",
+        mode: str | None = None,
+    ) -> dict[str, int]:
+        """Import Contacts, Groups, and Roles from parsed workbook data."""
+        if isinstance(contacts_or_dict, dict):
+            data_dict = contacts_or_dict
+            contacts_rows = data_dict.get("contacts", [])
+            groups_rows = data_dict.get("groups", [])
+            raw_roles = data_dict.get("roles", [])
+            r_names = []
+            for r in raw_roles:
+                if isinstance(r, dict):
+                    if r.get("name"):
+                        self.add_role(r["name"], r.get("color", "#00c896"))
+                    r_names.append(r.get("name") or "")
+                elif r:
+                    r_names.append(str(r))
+            roles_names = [r for r in r_names if r]
+            action = (mode or import_action or "merge").lower()
+        else:
+            contacts_rows = contacts_or_dict or []
+            groups_rows = groups_rows or []
+            roles_names = roles_names or []
+            action = (mode or import_action or "merge").lower()
+
+        stats = {"roles": 0, "contacts": 0, "groups": 0, "roles_added": 0, "contacts_updated": 0, "groups_updated": 0}
+
+        with self._get_connection() as conn:
+            if action == "replace":
+                conn.execute("DELETE FROM entity_roles")
+                logger.info("Import action 'replace': cleared existing entity_roles")
+
+        # 1. Add roles
+        for r_name in roles_names:
+            if self.add_role(r_name):
+                stats["roles_added"] += 1
+                stats["roles"] += 1
+
+        # 2. Upsert contacts
+        for c in contacts_rows:
+            phone = str(c.get("phone") or c.get("phone_or_jid") or c.get("phone_number") or "").strip()
+            name = str(c.get("name") or "").strip()
+            notes = str(c.get("notes") or "").strip()
+            roles_val = c.get("roles") or []
+            if isinstance(roles_val, str):
+                roles_val = [x.strip() for x in roles_val.split(",") if x.strip()]
+
+            # Determine JID
+            jid = str(c.get("jid") or "").strip()
+            if not jid and "@" in phone:
+                jid = phone
+            elif not jid and phone:
+                clean_phone = re.sub(r"\D", "", phone)
+                if clean_phone:
+                    jid = f"{clean_phone}@s.whatsapp.net"
+
+            if jid:
+                self.save_contact_with_roles(
+                    jid=jid,
+                    name=name,
+                    phone_number=phone if "@" not in phone else "",
+                    roles=roles_val,
+                    notes=notes,
+                    is_group=False,
+                )
+                stats["contacts_updated"] += 1
+                stats["contacts"] += 1
+
+        # 3. Upsert groups
+        for g in groups_rows:
+            jid = str(g.get("jid") or "").strip()
+            name = str(g.get("name") or "").strip()
+            notes = str(g.get("notes") or "").strip()
+            roles_val = g.get("roles") or []
+            if isinstance(roles_val, str):
+                roles_val = [x.strip() for x in roles_val.split(",") if x.strip()]
+
+            if jid and (jid.endswith("@g.us") or "@" not in jid):
+                if not jid.endswith("@g.us"):
+                    jid = f"{jid}@g.us"
+                self.save_contact_with_roles(
+                    jid=jid,
+                    name=name,
+                    phone_number="",
+                    roles=roles_val,
+                    notes=notes,
+                    is_group=True,
+                )
+                stats["groups_updated"] += 1
+                stats["groups"] += 1
+
+        return stats

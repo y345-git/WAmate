@@ -65,7 +65,8 @@ class WhatsAppBot:
         self.history_sync_completed = False
 
         # Link Gemini agent back to this bot client for document sending & extraction tools
-        self.gemini.bot_client = self
+        if self.gemini:
+            self.gemini.bot_client = self
 
         # Background workers synchronization & state
         self._stop_worker_event = threading.Event()
@@ -86,6 +87,9 @@ class WhatsAppBot:
         self._query_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="QueryWorker")
         self._active_queries = 0
         self._query_state_lock = threading.Lock()
+
+        # Background campaign scheduler worker
+        self._scheduler_thread: threading.Thread | None = None
 
         self._register_handlers()
 
@@ -456,21 +460,22 @@ class WhatsAppBot:
 
     def get_self_chat_jid(self) -> Any:
         """Resolve a valid, device-clean recipient JID (Device=0) for sending messages into self-chat."""
-        target = getattr(self, "last_self_chat_jid", None)
-        if target:
-            clean = clean_recipient_jid(target)
-            if clean:
-                return clean
-        if getattr(self, "my_non_ad_jid", None):
-            return self.my_non_ad_jid
-        if getattr(self, "my_jid", None):
-            clean = clean_recipient_jid(self.my_jid)
-            if clean:
-                return clean
-        if getattr(self, "my_user_number", ""):
-            return clean_recipient_jid(f"{self.my_user_number}@s.whatsapp.net")
-        if getattr(self, "my_canonical_jid", ""):
-            return clean_recipient_jid(self.my_canonical_jid)
+        candidates = [
+            getattr(self, "last_self_chat_jid", None),
+            getattr(self, "my_non_ad_jid", None),
+            getattr(self, "my_jid", None),
+            getattr(self, "my_canonical_jid", None),
+            f"{self.my_user_number}@s.whatsapp.net" if getattr(self, "my_user_number", "") else None,
+        ]
+        for candidate in candidates:
+            if candidate:
+                clean = clean_recipient_jid(candidate)
+                if clean:
+                    if hasattr(clean, "Device"):
+                        clean.Device = 0
+                    if hasattr(clean, "RawAgent"):
+                        clean.RawAgent = 0
+                    return clean
         return None
 
     def _begin_query(self) -> None:
@@ -1192,9 +1197,13 @@ class WhatsAppBot:
         if not row:
             return False, "Message not found."
 
-        dest_jid = self.get_self_chat_jid()
+        dest_jid = clean_recipient_jid(self.get_self_chat_jid())
         if not dest_jid:
             return False, "WhatsApp self-chat is not connected yet."
+        if hasattr(dest_jid, "Device"):
+            dest_jid.Device = 0
+        if hasattr(dest_jid, "RawAgent"):
+            dest_jid.RawAgent = 0
 
         mt = (row.get("media_type") or "text").lower()
         chat_name = row.get("chat_name") or row.get("chat_jid") or "Unknown"
@@ -1249,6 +1258,218 @@ class WhatsAppBot:
         except Exception as exc:
             logger.exception("Failed sending media %s to self-chat: %s", msg_id, exc)
             return False, f"WhatsApp send failed: {exc}"
+
+    def send_broadcast_message(
+        self,
+        recipients: list[dict[str, Any]],
+        message: str,
+        attachment_path: str = "",
+        attachment_filename: str = "",
+        attachment_mimetype: str = "",
+        min_delay: float = 1.0,
+        max_delay: float = 2.0,
+    ) -> dict[str, Any]:
+        """Broadcast a message and optional attachment to multiple recipients with safe pacing."""
+        import random
+        start_ts = int(time.time())
+        t0 = time.monotonic()
+        sent_count = 0
+        failed_count = 0
+        logs = []
+
+        total = len(recipients)
+        msg_text = (message or "").strip()
+        att_path = Path(attachment_path) if attachment_path and Path(attachment_path).is_file() else None
+
+        for idx, rec in enumerate(recipients):
+            if self._stop_worker_event.is_set():
+                logs.append({
+                    "jid": rec.get("jid", ""),
+                    "name": rec.get("name", ""),
+                    "phone": rec.get("phone", ""),
+                    "status": "cancelled",
+                    "error": "Bot stopped",
+                    "timestamp": int(time.time()),
+                })
+                failed_count += 1
+                continue
+
+            raw_jid = rec.get("jid") or rec.get("phone") or ""
+            dest = clean_recipient_jid(raw_jid)
+            rec_name = rec.get("name") or rec.get("push_name") or rec.get("phone") or str(raw_jid)
+            phone = rec.get("phone") or ""
+
+            if not dest:
+                logs.append({
+                    "jid": str(raw_jid),
+                    "name": rec_name,
+                    "phone": phone,
+                    "status": "failed",
+                    "error": "Invalid destination JID",
+                    "timestamp": int(time.time()),
+                })
+                failed_count += 1
+                continue
+
+            try:
+                resp = None
+                if att_path:
+                    fname = attachment_filename or att_path.name
+                    mime = attachment_mimetype or "application/octet-stream"
+                    if mime.startswith("image/"):
+                        resp = self.client.send_image(to=dest, file=str(att_path), caption=msg_text)
+                    elif mime.startswith("video/"):
+                        resp = self.client.send_video(to=dest, file=str(att_path), caption=msg_text)
+                    elif mime.startswith("audio/"):
+                        resp = self.client.send_audio(to=dest, file=str(att_path))
+                        if msg_text:
+                            self.client.send_message(dest, msg_text)
+                    else:
+                        resp = self.client.send_document(
+                            to=dest,
+                            file=str(att_path),
+                            filename=fname,
+                            mimetype=mime,
+                            caption=msg_text,
+                        )
+                else:
+                    resp = self.client.send_message(dest, msg_text)
+
+                if resp and hasattr(resp, "ID"):
+                    self.dedup.add(resp.ID)
+
+                sent_count += 1
+                logs.append({
+                    "jid": str(raw_jid),
+                    "name": rec_name,
+                    "phone": phone,
+                    "status": "sent",
+                    "error": "",
+                    "timestamp": int(time.time()),
+                })
+                logger.info("Broadcast sent [%d/%d] to %s (%s)", idx + 1, total, rec_name, raw_jid)
+            except Exception as exc:
+                failed_count += 1
+                logs.append({
+                    "jid": str(raw_jid),
+                    "name": rec_name,
+                    "phone": phone,
+                    "status": "failed",
+                    "error": str(exc),
+                    "timestamp": int(time.time()),
+                })
+                logger.warning("Broadcast failed [%d/%d] to %s: %s", idx + 1, total, raw_jid, exc)
+
+            # Safe inter-message delay
+            if idx < total - 1 and not self._stop_worker_event.is_set():
+                delay = random.uniform(min_delay, max_delay)
+                self._stop_worker_event.wait(delay)
+
+        elapsed = time.monotonic() - t0
+        return {
+            "total": total,
+            "sent": sent_count,
+            "failed": failed_count,
+            "duration": elapsed,
+            "started_at": start_ts,
+            "finished_at": int(time.time()),
+            "logs": logs,
+        }
+
+    def dispatch_scheduled_campaign(self, camp_id: str) -> tuple[bool, str]:
+        """Execute a scheduled campaign immediately."""
+        camp = self.db.get_scheduled_campaign(camp_id)
+        if not camp:
+            return False, "Campaign not found"
+        if camp["status"] in ("sent", "sending", "cancelled"):
+            return False, f"Campaign is already {camp['status']}"
+
+        self.db.update_scheduled_campaign_status(camp_id, "sending")
+        audience = camp.get("target_audience", "both")
+        recipients = []
+
+        if audience == "specific":
+            recipients = camp.get("specific_recipients", [])
+        else:
+            roles = camp.get("roles", [])
+            recipients = self.db.lookup_recipients_by_roles(roles, target_audience=audience)
+
+        if not recipients:
+            self.db.update_scheduled_campaign_status(
+                camp_id, "failed", sent_count=0, failed_count=0, total_targets=0,
+                logs=[{"error": "No matching recipients found for selected roles/audience"}]
+            )
+            return False, "No matching recipients found"
+
+        result = self.send_broadcast_message(
+            recipients=recipients,
+            message=camp.get("message", ""),
+            attachment_path=camp.get("attachment_path", ""),
+            attachment_filename=camp.get("attachment_name", ""),
+            attachment_mimetype=camp.get("attachment_mimetype", ""),
+        )
+
+        final_status = "sent" if result["sent"] > 0 else "failed"
+        self.db.update_scheduled_campaign_status(
+            camp_id,
+            status=final_status,
+            sent_count=result["sent"],
+            failed_count=result["failed"],
+            total_targets=result["total"],
+            logs=result["logs"],
+        )
+
+        # Record in campaign history
+        self.db.record_campaign_history(
+            message=camp.get("message", ""),
+            target_audience=audience,
+            roles=camp.get("roles", []),
+            recipients_count=result["total"],
+            sent_count=result["sent"],
+            failed_count=result["failed"],
+            duration_sec=result["duration"],
+            started_at=result["started_at"],
+            finished_at=result["finished_at"],
+            logs=result["logs"],
+            attachment_path=camp.get("attachment_path", ""),
+            attachment_filename=camp.get("attachment_name", ""),
+            campaign_type="scheduled",
+            camp_id=camp_id,
+        )
+
+        return True, f"Broadcast complete: {result['sent']} sent, {result['failed']} failed."
+
+    def trigger_scheduled_campaign_now(self, camp_id: str) -> tuple[bool, str]:
+        """Manually trigger immediate execution of a scheduled campaign."""
+        return self.dispatch_scheduled_campaign(camp_id)
+
+    def _start_scheduler_worker(self) -> None:
+        """Start the background campaign scheduler thread."""
+        if self._scheduler_thread and self._scheduler_thread.is_alive():
+            return
+        self._scheduler_thread = threading.Thread(
+            target=self._scheduler_loop,
+            name="BroadcastScheduler",
+            daemon=True,
+        )
+        self._scheduler_thread.start()
+        logger.info("Broadcast scheduler background thread launched.")
+
+    def _scheduler_loop(self) -> None:
+        """Background loop that regularly checks and executes due scheduled campaigns."""
+        while not self._stop_worker_event.is_set():
+            if self._stop_worker_event.wait(15.0):
+                break
+            try:
+                now_ts = int(time.time())
+                due = self.db.get_due_scheduled_campaigns(now_ts)
+                for camp in due:
+                    if self._stop_worker_event.is_set():
+                        break
+                    logger.info("Executing due scheduled campaign: %s", camp["id"])
+                    self.dispatch_scheduled_campaign(camp["id"])
+            except Exception as e:
+                logger.debug("Error in scheduler loop: %s", e)
 
     def read_and_ocr_document(
         self, query: str = "", specific_question: str = "", message_id: str = ""
@@ -1958,6 +2179,8 @@ class WhatsAppBot:
             self._media_storage_thread.join(timeout=2.0)
         if self._local_index_thread and self._local_index_thread.is_alive():
             self._local_index_thread.join(timeout=2.0)
+        if self._scheduler_thread and self._scheduler_thread.is_alive():
+            self._scheduler_thread.join(timeout=2.0)
         try:
             self._media_executor.shutdown(wait=False)
         except Exception:
@@ -2001,6 +2224,9 @@ class WhatsAppBot:
         # Launch zero-API Local Background Index worker (doc text extraction + optional image CPU OCR)
         self._start_local_index_worker()
 
+        # Launch broadcast campaign scheduler worker
+        self._start_scheduler_worker()
+
         logger.info("Starting WhatsApp client connection...")
         self.client.connect()
 
@@ -2017,6 +2243,8 @@ class WhatsAppBot:
             self._media_storage_thread.join(timeout=2.0)
         if self._local_index_thread and self._local_index_thread.is_alive():
             self._local_index_thread.join(timeout=2.0)
+        if self._scheduler_thread and self._scheduler_thread.is_alive():
+            self._scheduler_thread.join(timeout=2.0)
 
         # 1. Server-side logout via neonize
         try:
