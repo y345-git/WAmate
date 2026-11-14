@@ -2530,6 +2530,335 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
     max-height: 440px;
     overflow-y: auto;
   }
+
+  /* Campaign scheduler custom datetime picker & presets */
+  .sched-dt-trigger {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: #091219;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 14px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    user-select: none;
+  }
+  .sched-dt-trigger:hover {
+    border-color: var(--accent);
+    background: #0c1822;
+  }
+  .sched-dt-trigger-left {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .sched-dt-icon {
+    color: var(--accent);
+    flex-shrink: 0;
+  }
+  .sched-dt-trigger-right {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--muted);
+  }
+  .sched-dt-rel-badge {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 2px 8px;
+    background: var(--accent-dim);
+    color: var(--accent);
+    border-radius: 9999px;
+    border: 1px solid rgba(0, 224, 168, 0.2);
+  }
+  .sched-presets-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
+  }
+  .sched-preset-btn {
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 500;
+    padding: 4px 9px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .sched-preset-btn:hover {
+    background: rgba(0, 224, 168, 0.12);
+    border-color: rgba(0, 224, 168, 0.35);
+    color: var(--accent);
+  }
+  .sched-picker-modal {
+    max-width: 620px;
+  }
+  .sched-picker-body {
+    padding: 16px 20px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .sched-picker-presets {
+    padding-bottom: 12px;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  }
+  .sched-picker-columns {
+    display: grid;
+    grid-template-columns: 1.15fr 0.85fr;
+    gap: 16px;
+  }
+  @media (max-width: 640px) {
+    .sched-picker-columns {
+      grid-template-columns: 1fr;
+    }
+  }
+  .sched-calendar-col {
+    background: #061017;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 10px;
+    padding: 12px;
+  }
+  .sched-cal-nav {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+  }
+  .sched-cal-nav-btn {
+    background: transparent;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    color: var(--text);
+    padding: 4px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 12px;
+    transition: all 0.15s ease;
+  }
+  .sched-cal-nav-btn:hover {
+    background: rgba(255, 255, 255, 0.08);
+    border-color: var(--accent);
+  }
+  .sched-cal-title {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text);
+  }
+  .sched-cal-weekdays {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    text-align: center;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--muted);
+    margin-bottom: 6px;
+  }
+  .sched-cal-days {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 2px;
+  }
+  .sched-cal-day {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 32px;
+    font-size: 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    color: var(--text);
+    border: 1px solid transparent;
+    transition: all 0.1s ease;
+    user-select: none;
+  }
+  .sched-cal-day:hover:not(.disabled):not(.empty) {
+    background: rgba(0, 224, 168, 0.15);
+    color: var(--accent);
+  }
+  .sched-cal-day.active {
+    background: var(--accent) !important;
+    color: #061017 !important;
+    font-weight: 700;
+  }
+  .sched-cal-day.today:not(.active) {
+    border-color: rgba(0, 224, 168, 0.4);
+    color: var(--accent);
+  }
+  .sched-cal-day.disabled {
+    color: rgba(255, 255, 255, 0.18);
+    cursor: not-allowed;
+  }
+  .sched-cal-day.empty {
+    cursor: default;
+  }
+  .sched-time-col {
+    background: #061017;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 10px;
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+  }
+  .sched-time-title {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text);
+    margin-bottom: 10px;
+  }
+  .sched-time-controls {
+    display: flex;
+    align-items: flex-end;
+    gap: 6px;
+  }
+  .sched-time-field {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .sched-time-label {
+    font-size: 11px;
+    color: var(--muted);
+    font-weight: 500;
+  }
+  .sched-time-sep {
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--muted);
+    padding-bottom: 6px;
+  }
+  .sched-ampm-toggle {
+    display: flex;
+    background: #091219;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .sched-ampm-btn {
+    background: transparent;
+    border: none;
+    color: var(--muted);
+    font-size: 11px;
+    font-weight: 600;
+    padding: 8px 8px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .sched-ampm-btn.active {
+    background: var(--accent);
+    color: #061017;
+  }
+  .sched-time-presets {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .sched-time-preset-btn {
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    color: var(--muted);
+    font-size: 11px;
+    padding: 4px 8px;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .sched-time-preset-btn:hover {
+    background: rgba(0, 224, 168, 0.12);
+    border-color: rgba(0, 224, 168, 0.35);
+    color: var(--accent);
+  }
+  .sched-picker-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+
+  /* Floating Broadcast Progress Tracker */
+  .bcast-floating-tracker {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    z-index: 1050;
+    background: #0f1c28;
+    border: 1px solid rgba(0, 224, 168, 0.4);
+    box-shadow: 0 12px 36px rgba(0, 0, 0, 0.6), 0 0 20px rgba(0, 224, 168, 0.15);
+    border-radius: 12px;
+    padding: 10px 14px;
+    cursor: pointer;
+    transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+    user-select: none;
+    animation: floatSlideUp 0.25s ease-out;
+  }
+  .bcast-floating-tracker:hover {
+    transform: translateY(-2px);
+    border-color: var(--accent);
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.7), 0 0 25px rgba(0, 224, 168, 0.25);
+  }
+  @keyframes floatSlideUp {
+    from { opacity: 0; transform: translateY(12px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .bcast-float-inner {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .bcast-float-details {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .bcast-float-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .bcast-float-pill {
+    font-size: 11px;
+    font-weight: 700;
+    padding: 1px 6px;
+    background: var(--accent-dim);
+    color: var(--accent);
+    border-radius: 9999px;
+  }
+  .bcast-float-sub {
+    font-size: 11px;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+  }
+  .bcast-float-icon-btn {
+    background: transparent;
+    border: none;
+    color: var(--accent);
+    cursor: pointer;
+    padding: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 6px;
+    margin-left: 4px;
+  }
+  .bcast-float-icon-btn:hover {
+    background: rgba(255, 255, 255, 0.08);
+  }
 </style>
 </head>
 <body>
@@ -2866,7 +3195,30 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
           </div>
           <div class="bcast-field">
             <label class="bcast-label">Send Date &amp; Time (Local Time)</label>
-            <input id="schedTimeInput" type="datetime-local" class="bcast-input"/>
+            <input id="schedTimeInput" type="hidden"/>
+            <div class="sched-dt-trigger" id="schedDtTrigger" onclick="openDateTimePicker()">
+              <div class="sched-dt-trigger-left">
+                <svg class="ico-sm sched-dt-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
+                  <line x1="16" y1="2" x2="16" y2="6"/>
+                  <line x1="8" y1="2" x2="8" y2="6"/>
+                  <line x1="3" y1="10" x2="21" y2="10"/>
+                </svg>
+                <span id="schedDtDisplay" class="sched-dt-text">Choose dispatch date &amp; time...</span>
+              </div>
+              <div class="sched-dt-trigger-right">
+                <span id="schedDtRelative" class="sched-dt-rel-badge">in 1 hour</span>
+                <svg class="ico-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+              </div>
+            </div>
+            <div class="sched-presets-row">
+              <button type="button" class="sched-preset-btn" onclick="applySchedulePreset(30)">+30m</button>
+              <button type="button" class="sched-preset-btn" onclick="applySchedulePreset(60)">+1h</button>
+              <button type="button" class="sched-preset-btn" onclick="applySchedulePreset(180)">+3h</button>
+              <button type="button" class="sched-preset-btn" onclick="applySchedulePreset('tonight')">Tonight (8 PM)</button>
+              <button type="button" class="sched-preset-btn" onclick="applySchedulePreset('tomorrow_am')">Tomorrow 9 AM</button>
+              <button type="button" class="sched-preset-btn" onclick="applySchedulePreset('tomorrow_pm')">Tomorrow 6 PM</button>
+            </div>
           </div>
           <div class="bcast-field">
             <label class="bcast-label">Audience Scope</label>
@@ -3145,7 +3497,7 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
       <span class="live-dot"></span>
       <strong id="bcastProgressModalTitle">Broadcasting Messages</strong>
     </div>
-    <button id="bcastProgressCloseBtn" class="ghost-btn" onclick="closeBroadcastProgressModal()" disabled>✕</button>
+    <button id="bcastProgressCloseBtn" class="ghost-btn" onclick="closeBroadcastProgressModal()" title="Close / Run in background">✕</button>
   </div>
   <div class="modal-body bcast-modal-body">
     <div class="bcast-progress-wrap">
@@ -3166,8 +3518,100 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
     <div id="bcastProgressLogs" class="bcast-progress-logs">
       <div style="color:var(--muted);text-align:center;padding:12px 0;">Live delivery log will appear here as messages are sent...</div>
     </div>
-    <div class="bcast-modal-actions" style="margin-top:10px;">
-      <button id="bcastProgressDoneBtn" type="button" class="primary-btn-sm" onclick="closeBroadcastProgressModal()" disabled style="display:inline-flex;">Done</button>
+    <div class="bcast-modal-actions" style="margin-top:12px;display:flex;justify-content:space-between;align-items:center;">
+      <span id="bcastModalBgHint" style="font-size:11px;color:var(--muted);">Closing this dialog lets the broadcast run safely in the background.</span>
+      <div style="display:flex;gap:8px;">
+        <button id="bcastProgressBgBtn" type="button" class="ghost-btn-sm" onclick="closeBroadcastProgressModal()">Run in Background</button>
+        <button id="bcastProgressDoneBtn" type="button" class="primary-btn-sm" onclick="closeBroadcastProgressModal()" style="display:none;">Close</button>
+      </div>
+    </div>
+  </div>
+</dialog>
+
+<dialog id="schedDateTimePickerModal" class="bcast-modal sched-picker-modal">
+  <div class="modal-hdr">
+    <div style="display:flex;align-items:center;gap:8px;">
+      <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></svg>
+      <strong>Choose Send Date &amp; Time</strong>
+    </div>
+    <button type="button" class="ghost-btn" onclick="closeDateTimePicker()">✕</button>
+  </div>
+  <div class="modal-body sched-picker-body">
+    <div class="sched-picker-presets">
+      <span style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;">Quick Presets:</span>
+      <div class="sched-presets-row" style="margin-top:6px;">
+        <button type="button" class="sched-preset-btn" onclick="applySchedulePreset(30, true)">+30m</button>
+        <button type="button" class="sched-preset-btn" onclick="applySchedulePreset(60, true)">+1h</button>
+        <button type="button" class="sched-preset-btn" onclick="applySchedulePreset(180, true)">+3h</button>
+        <button type="button" class="sched-preset-btn" onclick="applySchedulePreset('tonight', true)">Tonight 8 PM</button>
+        <button type="button" class="sched-preset-btn" onclick="applySchedulePreset('tomorrow_am', true)">Tomorrow 9 AM</button>
+        <button type="button" class="sched-preset-btn" onclick="applySchedulePreset('tomorrow_pm', true)">Tomorrow 6 PM</button>
+      </div>
+    </div>
+
+    <div class="sched-picker-columns">
+      <!-- Calendar -->
+      <div class="sched-calendar-col">
+        <div class="sched-cal-nav">
+          <button type="button" class="sched-cal-nav-btn" onclick="calPrevMonth()" title="Previous Month">❮</button>
+          <span id="schedCalMonthYear" class="sched-cal-title">Month Year</span>
+          <button type="button" class="sched-cal-nav-btn" onclick="calNextMonth()" title="Next Month">❯</button>
+        </div>
+        <div class="sched-cal-weekdays">
+          <span>Su</span><span>Mo</span><span>Tu</span><span>We</span><span>Th</span><span>Fr</span><span>Sa</span>
+        </div>
+        <div id="schedCalDaysGrid" class="sched-cal-days"></div>
+      </div>
+
+      <!-- Time Picker -->
+      <div class="sched-time-col">
+        <div>
+          <div class="sched-time-title">Select Time</div>
+          <div class="sched-time-controls">
+            <div class="sched-time-field">
+              <label class="sched-time-label">Hour</label>
+              <select id="schedHourSelect" class="bcast-select" onchange="onTimeSelectionChange()"></select>
+            </div>
+            <div class="sched-time-sep">:</div>
+            <div class="sched-time-field">
+              <label class="sched-time-label">Minute</label>
+              <select id="schedMinuteSelect" class="bcast-select" onchange="onTimeSelectionChange()"></select>
+            </div>
+            <div class="sched-time-field">
+              <label class="sched-time-label">Period</label>
+              <div class="sched-ampm-toggle">
+                <button type="button" id="schedAmBtn" class="sched-ampm-btn" onclick="setSchedPeriod('AM')">AM</button>
+                <button type="button" id="schedPmBtn" class="sched-ampm-btn active" onclick="setSchedPeriod('PM')">PM</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div style="margin-top:14px;">
+          <div style="font-size:11px;font-weight:600;color:var(--muted);text-transform:uppercase;margin-bottom:6px;">Common Times:</div>
+          <div class="sched-time-presets">
+            <button type="button" class="sched-time-preset-btn" onclick="setCommonTime(9, 0, 'AM')">09:00 AM</button>
+            <button type="button" class="sched-time-preset-btn" onclick="setCommonTime(12, 0, 'PM')">12:00 PM</button>
+            <button type="button" class="sched-time-preset-btn" onclick="setCommonTime(3, 0, 'PM')">03:00 PM</button>
+            <button type="button" class="sched-time-preset-btn" onclick="setCommonTime(6, 0, 'PM')">06:00 PM</button>
+            <button type="button" class="sched-time-preset-btn" onclick="setCommonTime(8, 0, 'PM')">08:00 PM</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="sched-picker-footer">
+      <div class="sched-preview-info">
+        <span style="font-size:11px;color:var(--muted);">Selected Dispatch Time:</span>
+        <div style="display:flex;align-items:center;gap:8px;margin-top:2px;">
+          <strong id="schedModalPreviewText" style="color:var(--text);font-size:13px;">—</strong>
+          <span id="schedModalRelBadge" class="sched-dt-rel-badge">in 1 hour</span>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;">
+        <button type="button" class="ghost-btn-sm" onclick="closeDateTimePicker()">Cancel</button>
+        <button type="button" class="primary-btn-sm" onclick="confirmDateTimePicker()">Confirm &amp; Set</button>
+      </div>
     </div>
   </div>
 </dialog>
@@ -3179,6 +3623,26 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
   </div>
   <div id="modalBody" class="modal-body"></div>
 </dialog>
+
+<!-- Floating Broadcast Progress Tracker Widget -->
+<div id="broadcastFloatingTracker" class="bcast-floating-tracker" onclick="reopenBroadcastProgressModal()" style="display:none;" title="Click to view live broadcast progress">
+  <div class="bcast-float-inner">
+    <span class="live-dot"></span>
+    <div class="bcast-float-details">
+      <div class="bcast-float-header">
+        <strong id="bcastFloatTitle">Broadcasting Messages</strong>
+        <span id="bcastFloatPercent" class="bcast-float-pill">0%</span>
+      </div>
+      <div class="bcast-float-sub">
+        Sent: <strong id="bcastFloatSent" style="color:var(--accent);">0</strong>/<span id="bcastFloatTotal">0</span>
+        <span id="bcastFloatRecip" style="color:var(--muted);margin-left:6px;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:inline-block;vertical-align:bottom;"></span>
+      </div>
+    </div>
+    <button type="button" class="bcast-float-icon-btn" aria-label="Open tracker">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+    </button>
+  </div>
+</div>
 
 <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
@@ -4585,6 +5049,10 @@ function initSendTab() {
   });
 }
 
+let _broadcastPollTimer = null;
+let _isBroadcastingActive = false;
+let _activeBroadcastProgress = null;
+
 function openBroadcastProgressModal(totalCount = 0) {
   const dlg = document.getElementById('broadcastProgressModal');
   if (!dlg) return;
@@ -4596,7 +5064,12 @@ function openBroadcastProgressModal(totalCount = 0) {
   const fld = document.getElementById('bcastFailedCount');
   const logs = document.getElementById('bcastProgressLogs');
   const closeBtn = document.getElementById('bcastProgressCloseBtn');
+  const bgBtn = document.getElementById('bcastProgressBgBtn');
   const doneBtn = document.getElementById('bcastProgressDoneBtn');
+
+  // Hide floating tracker while modal dialog is open
+  const floatEl = document.getElementById('broadcastFloatingTracker');
+  if (floatEl) floatEl.style.display = 'none';
 
   if (bar) bar.style.width = '0%';
   if (pct) pct.textContent = '0%';
@@ -4605,14 +5078,41 @@ function openBroadcastProgressModal(totalCount = 0) {
   if (snt) snt.textContent = '0';
   if (fld) fld.textContent = '0';
   if (logs) logs.innerHTML = '<div style="color:var(--muted);text-align:center;padding:12px 0;">Connecting to WhatsApp dispatch queue...</div>';
-  if (closeBtn) closeBtn.disabled = true;
-  if (doneBtn) { doneBtn.disabled = true; doneBtn.textContent = 'Sending...'; }
+
+  if (closeBtn) closeBtn.disabled = false;
+  if (bgBtn) bgBtn.style.display = 'inline-flex';
+  if (doneBtn) doneBtn.style.display = 'none';
 
   dlg.showModal();
 }
 
+function reopenBroadcastProgressModal() {
+  const dlg = document.getElementById('broadcastProgressModal');
+  if (!dlg) return;
+  const floatEl = document.getElementById('broadcastFloatingTracker');
+  if (floatEl) floatEl.style.display = 'none';
+  if (_activeBroadcastProgress) {
+    updateBroadcastProgressUI(_activeBroadcastProgress);
+  }
+  dlg.showModal();
+}
+
+function closeBroadcastProgressModal() {
+  const dlg = document.getElementById('broadcastProgressModal');
+  if (dlg && dlg.open) dlg.close();
+
+  // If broadcast is actively dispatching, show the floating tracker capsule
+  if (_isBroadcastingActive) {
+    const floatEl = document.getElementById('broadcastFloatingTracker');
+    if (floatEl) floatEl.style.display = 'block';
+    showToast('Broadcast continuing in background. Click floating pill to view.');
+  }
+}
+
 function updateBroadcastProgressUI(prog) {
   if (!prog) return;
+  _activeBroadcastProgress = prog;
+
   const bar = document.getElementById('bcastProgressBar');
   const pct = document.getElementById('bcastProgressPercent');
   const st = document.getElementById('bcastProgressStatus');
@@ -4621,6 +5121,7 @@ function updateBroadcastProgressUI(prog) {
   const fld = document.getElementById('bcastFailedCount');
   const logs = document.getElementById('bcastProgressLogs');
   const closeBtn = document.getElementById('bcastProgressCloseBtn');
+  const bgBtn = document.getElementById('bcastProgressBgBtn');
   const doneBtn = document.getElementById('bcastProgressDoneBtn');
 
   const p = Math.min(100, Math.max(0, prog.percent || 0));
@@ -4629,6 +5130,17 @@ function updateBroadcastProgressUI(prog) {
   if (tot) tot.textContent = String(prog.total || 0);
   if (snt) snt.textContent = String(prog.sent_count || 0);
   if (fld) fld.textContent = String(prog.failed_count || 0);
+
+  // Update floating tracker widget
+  const floatSent = document.getElementById('bcastFloatSent');
+  const floatTotal = document.getElementById('bcastFloatTotal');
+  const floatPct = document.getElementById('bcastFloatPercent');
+  const floatRecip = document.getElementById('bcastFloatRecip');
+  const floatTitle = document.getElementById('bcastFloatTitle');
+  if (floatSent) floatSent.textContent = String(prog.sent_count || 0);
+  if (floatTotal) floatTotal.textContent = String(prog.total || 0);
+  if (floatPct) floatPct.textContent = `${p}%`;
+  if (floatRecip) floatRecip.textContent = prog.current_recipient ? `• ${prog.current_recipient}` : '';
 
   if (st) {
     if (prog.status === 'complete') {
@@ -4659,15 +5171,83 @@ function updateBroadcastProgressUI(prog) {
   }
 
   if (prog.status === 'complete') {
+    _isBroadcastingActive = false;
     if (closeBtn) closeBtn.disabled = false;
-    if (doneBtn) { doneBtn.disabled = false; doneBtn.textContent = 'Close'; }
+    if (bgBtn) bgBtn.style.display = 'none';
+    if (doneBtn) { doneBtn.style.display = 'inline-flex'; doneBtn.textContent = 'Close'; }
+    if (floatTitle) floatTitle.innerHTML = '<span style="color:var(--accent);">✓ Broadcast Complete</span>';
+    setTimeout(() => {
+      if (!_isBroadcastingActive) {
+        const floatEl = document.getElementById('broadcastFloatingTracker');
+        if (floatEl) floatEl.style.display = 'none';
+      }
+    }, 6000);
   }
 }
 
-function closeBroadcastProgressModal() {
-  const dlg = document.getElementById('broadcastProgressModal');
-  if (dlg) dlg.close();
+async function checkActiveBroadcastOnLoad() {
+  try {
+    const res = await fetch('/api/campaigns/active_progress');
+    const data = await res.json();
+    if (data.ok && data.progress && data.progress.status === 'sending') {
+      _isBroadcastingActive = true;
+      _activeBroadcastProgress = data.progress;
+      updateBroadcastProgressUI(data.progress);
+      const dlg = document.getElementById('broadcastProgressModal');
+      if (!dlg || !dlg.open) {
+        const floatEl = document.getElementById('broadcastFloatingTracker');
+        if (floatEl) floatEl.style.display = 'block';
+      }
+      startBroadcastPolling();
+    }
+  } catch (e) {}
 }
+
+function startBroadcastPolling() {
+  if (_broadcastPollTimer) clearInterval(_broadcastPollTimer);
+  _broadcastPollTimer = setInterval(async () => {
+    try {
+      const pRes = await fetch('/api/campaigns/active_progress');
+      const pData = await pRes.json();
+      if (pData.ok && pData.progress) {
+        updateBroadcastProgressUI(pData.progress);
+        if (pData.progress.status === 'complete') {
+          clearInterval(_broadcastPollTimer);
+          _broadcastPollTimer = null;
+          loadBroadcastHistory();
+        }
+      }
+    } catch (e) {}
+  }, 350);
+}
+
+// Hook backdrop click and Escape for dialogs
+setTimeout(() => {
+  const bcastModal = document.getElementById('broadcastProgressModal');
+  if (bcastModal) {
+    bcastModal.addEventListener('cancel', (e) => {
+      e.preventDefault();
+      closeBroadcastProgressModal();
+    });
+    bcastModal.addEventListener('click', (e) => {
+      const rect = bcastModal.getBoundingClientRect();
+      const inBox = (rect.top <= e.clientY && e.clientY <= rect.top + rect.height && rect.left <= e.clientX && e.clientX <= rect.left + rect.width);
+      if (!inBox) closeBroadcastProgressModal();
+    });
+  }
+  const schedDtModal = document.getElementById('schedDateTimePickerModal');
+  if (schedDtModal) {
+    schedDtModal.addEventListener('cancel', (e) => {
+      e.preventDefault();
+      closeDateTimePicker();
+    });
+    schedDtModal.addEventListener('click', (e) => {
+      const rect = schedDtModal.getBoundingClientRect();
+      const inBox = (rect.top <= e.clientY && e.clientY <= rect.top + rect.height && rect.left <= e.clientX && e.clientX <= rect.left + rect.width);
+      if (!inBox) closeDateTimePicker();
+    });
+  }
+}, 50);
 
 async function submitBroadcastSend() {
   const btn = document.getElementById('sendBroadcastBtn');
@@ -4691,22 +5271,9 @@ async function submitBroadcastSend() {
     btn.innerHTML = '<span class="live-dot"></span> Sending broadcast to WhatsApp...';
   }
 
-  // Open live progress tracker modal immediately
+  _isBroadcastingActive = true;
   openBroadcastProgressModal();
-
-  let pollTimer = setInterval(async () => {
-    try {
-      const pRes = await fetch('/api/campaigns/active_progress');
-      const pData = await pRes.json();
-      if (pData.ok && pData.progress) {
-        updateBroadcastProgressUI(pData.progress);
-        if (pData.progress.status === 'complete') {
-          clearInterval(pollTimer);
-          pollTimer = null;
-        }
-      }
-    } catch (e) {}
-  }, 350);
+  startBroadcastPolling();
 
   try {
     const res = await fetch('/api/campaigns/send', {
@@ -4732,14 +5299,15 @@ async function submitBroadcastSend() {
     window._sendSpecificRecipients = [];
     renderSpecificChips('sendSpecificChips', '_sendSpecificRecipients', 'updateSendPreview');
     updateSendPreview();
+    loadBroadcastHistory();
   } catch (e) {
     showToast(`Broadcast failed: ${e.message}`);
   } finally {
-    if (pollTimer) {
-      clearInterval(pollTimer);
-      pollTimer = null;
+    _isBroadcastingActive = false;
+    if (_broadcastPollTimer) {
+      clearInterval(_broadcastPollTimer);
+      _broadcastPollTimer = null;
     }
-    // Fetch final progress state
     try {
       const pRes = await fetch('/api/campaigns/active_progress');
       const pData = await pRes.json();
@@ -4748,9 +5316,11 @@ async function submitBroadcastSend() {
       }
     } catch (e) {}
     const closeBtn = document.getElementById('bcastProgressCloseBtn');
+    const bgBtn = document.getElementById('bcastProgressBgBtn');
     const doneBtn = document.getElementById('bcastProgressDoneBtn');
     if (closeBtn) closeBtn.disabled = false;
-    if (doneBtn) { doneBtn.disabled = false; doneBtn.textContent = 'Close'; }
+    if (bgBtn) bgBtn.style.display = 'none';
+    if (doneBtn) { doneBtn.style.display = 'inline-flex'; doneBtn.textContent = 'Close'; }
 
     if (btn) {
       btn.disabled = false;
@@ -4759,16 +5329,294 @@ async function submitBroadcastSend() {
   }
 }
 
+// ==========================================
+// Custom DateTime Picker & Campaign Scheduler
+// ==========================================
+let _schedPickerDate = new Date();
+let _schedSelectedDate = new Date();
+let _schedSelectedPeriod = 'PM';
+
+function roundToNext5Mins(d) {
+  const coeff = 1000 * 60 * 5;
+  return new Date(Math.ceil(d.getTime() / coeff) * coeff);
+}
+
+function toIsoLocalDateTime(d) {
+  const pad = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function formatDateTimeReadable(d) {
+  const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  const dayName = days[d.getDay()];
+  const monthName = months[d.getMonth()];
+  const dateNum = d.getDate();
+  const year = d.getFullYear();
+  let hours = d.getHours();
+  const period = hours >= 12 ? 'PM' : 'AM';
+  hours = hours % 12 || 12;
+  const mins = String(d.getMinutes()).padStart(2, '0');
+  return `${dayName}, ${dateNum} ${monthName} ${year} at ${hours}:${mins} ${period}`;
+}
+
+function formatRelativeTimeDiff(target) {
+  const now = new Date();
+  const diffMs = target.getTime() - now.getTime();
+  if (diffMs <= 0) return 'immediate';
+  const diffMins = Math.round(diffMs / 60000);
+  if (diffMins < 60) return `in ${diffMins} min${diffMins === 1 ? '' : 's'}`;
+  const diffHours = Math.round(diffMins / 60);
+  if (diffHours < 24) return `in ${diffHours} hour${diffHours === 1 ? '' : 's'}`;
+  const diffDays = Math.round(diffHours / 24);
+  return `in ${diffDays} day${diffDays === 1 ? '' : 's'}`;
+}
+
+function formatScheduledTimeSnippet(isoStr) {
+  if (!isoStr) return '—';
+  try {
+    const d = new Date(isoStr);
+    if (isNaN(d.getTime())) return esc(isoStr);
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    let h = d.getHours();
+    const p = h >= 12 ? 'PM' : 'AM';
+    h = h % 12 || 12;
+    const m = String(d.getMinutes()).padStart(2, '0');
+    return `${d.getDate()} ${months[d.getMonth()]} ${d.getFullYear()}, ${h}:${m} ${p}`;
+  } catch(e) {
+    return esc(isoStr);
+  }
+}
+
+function applyChosenScheduleDate(target) {
+  const hiddenInput = document.getElementById('schedTimeInput');
+  const displayEl = document.getElementById('schedDtDisplay');
+  const relEl = document.getElementById('schedDtRelative');
+  if (hiddenInput) hiddenInput.value = toIsoLocalDateTime(target);
+  if (displayEl) displayEl.textContent = formatDateTimeReadable(target);
+  if (relEl) relEl.textContent = formatRelativeTimeDiff(target);
+}
+
+function applySchedulePreset(preset, fromModal = false) {
+  let d = new Date();
+  if (preset === 30) {
+    d = roundToNext5Mins(new Date(Date.now() + 30 * 60 * 1000));
+  } else if (preset === 60) {
+    d = roundToNext5Mins(new Date(Date.now() + 60 * 60 * 1000));
+  } else if (preset === 180) {
+    d = roundToNext5Mins(new Date(Date.now() + 180 * 60 * 1000));
+  } else if (preset === 'tonight') {
+    d = new Date();
+    d.setHours(20, 0, 0, 0);
+    if (d.getTime() <= Date.now() + 600000) d.setDate(d.getDate() + 1);
+  } else if (preset === 'tomorrow_am') {
+    d = new Date();
+    d.setDate(d.getDate() + 1);
+    d.setHours(9, 0, 0, 0);
+  } else if (preset === 'tomorrow_pm') {
+    d = new Date();
+    d.setDate(d.getDate() + 1);
+    d.setHours(18, 0, 0, 0);
+  }
+
+  _schedSelectedDate = new Date(d);
+  _schedPickerDate = new Date(d);
+  applyChosenScheduleDate(d);
+
+  if (fromModal) {
+    let h = d.getHours();
+    _schedSelectedPeriod = h >= 12 ? 'PM' : 'AM';
+    let h12 = h % 12 || 12;
+    let mins = d.getMinutes();
+    const hSel = document.getElementById('schedHourSelect');
+    const mSel = document.getElementById('schedMinuteSelect');
+    if (hSel) hSel.value = String(h12);
+    if (mSel) mSel.value = String(mins).padStart(2, '0');
+    setSchedPeriod(_schedSelectedPeriod);
+    renderCalDaysGrid();
+    updatePickerModalPreview();
+    closeDateTimePicker();
+  }
+}
+
+function openDateTimePicker() {
+  const dlg = document.getElementById('schedDateTimePickerModal');
+  if (!dlg) return;
+
+  const hiddenInput = document.getElementById('schedTimeInput');
+  let currentVal = hiddenInput ? hiddenInput.value : '';
+  let d = currentVal ? new Date(currentVal) : roundToNext5Mins(new Date(Date.now() + 3600000));
+  if (isNaN(d.getTime())) d = roundToNext5Mins(new Date(Date.now() + 3600000));
+
+  _schedSelectedDate = new Date(d);
+  _schedPickerDate = new Date(d);
+
+  let h = d.getHours();
+  _schedSelectedPeriod = h >= 12 ? 'PM' : 'AM';
+  let h12 = h % 12 || 12;
+  let mins = Math.floor(d.getMinutes() / 5) * 5;
+
+  const hSel = document.getElementById('schedHourSelect');
+  const mSel = document.getElementById('schedMinuteSelect');
+  if (hSel) {
+    if (!hSel.options.length) {
+      hSel.innerHTML = Array.from({length: 12}, (_, i) => `<option value="${i+1}">${String(i+1).padStart(2, '0')}</option>`).join('');
+    }
+    hSel.value = String(h12);
+  }
+  if (mSel) {
+    if (!mSel.options.length) {
+      mSel.innerHTML = Array.from({length: 12}, (_, i) => {
+        const m = String(i * 5).padStart(2, '0');
+        return `<option value="${m}">:${m}</option>`;
+      }).join('');
+    }
+    mSel.value = String(mins).padStart(2, '0');
+  }
+
+  setSchedPeriod(_schedSelectedPeriod);
+  renderCalDaysGrid();
+  updatePickerModalPreview();
+
+  dlg.showModal();
+}
+
+function closeDateTimePicker() {
+  const dlg = document.getElementById('schedDateTimePickerModal');
+  if (dlg && dlg.open) dlg.close();
+}
+
+function renderCalDaysGrid() {
+  const container = document.getElementById('schedCalDaysGrid');
+  const title = document.getElementById('schedCalMonthYear');
+  if (!container || !title) return;
+
+  const year = _schedPickerDate.getFullYear();
+  const month = _schedPickerDate.getMonth();
+  const monthNames = [
+    'January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December'
+  ];
+  title.textContent = `${monthNames[month]} ${year}`;
+
+  const firstDayIndex = new Date(year, month, 1).getDay();
+  const lastDate = new Date(year, month + 1, 0).getDate();
+
+  const now = new Date();
+  const todayY = now.getFullYear();
+  const todayM = now.getMonth();
+  const todayD = now.getDate();
+
+  const selY = _schedSelectedDate.getFullYear();
+  const selM = _schedSelectedDate.getMonth();
+  const selD = _schedSelectedDate.getDate();
+
+  let html = '';
+  for (let i = 0; i < firstDayIndex; i++) {
+    html += '<div class="sched-cal-day empty"></div>';
+  }
+
+  for (let day = 1; day <= lastDate; day++) {
+    const isPast = (
+      year < todayY ||
+      (year === todayY && month < todayM) ||
+      (year === todayY && month === todayM && day < todayD)
+    );
+    const isToday = (year === todayY && month === todayM && day === todayD);
+    const isSelected = (year === selY && month === selM && day === selD);
+
+    const classes = ['sched-cal-day'];
+    if (isPast) classes.push('disabled');
+    if (isToday) classes.push('today');
+    if (isSelected) classes.push('active');
+
+    if (isPast) {
+      html += `<div class="${classes.join(' ')}">${day}</div>`;
+    } else {
+      html += `<div class="${classes.join(' ')}" onclick="selectCalDay(${year}, ${month}, ${day})">${day}</div>`;
+    }
+  }
+
+  container.innerHTML = html;
+}
+
+function calPrevMonth() {
+  _schedPickerDate.setMonth(_schedPickerDate.getMonth() - 1);
+  renderCalDaysGrid();
+}
+
+function calNextMonth() {
+  _schedPickerDate.setMonth(_schedPickerDate.getMonth() + 1);
+  renderCalDaysGrid();
+}
+
+function selectCalDay(year, month, day) {
+  _schedSelectedDate.setFullYear(year, month, day);
+  renderCalDaysGrid();
+  updatePickerModalPreview();
+}
+
+function getSelectedModalTime() {
+  const hSel = document.getElementById('schedHourSelect');
+  const mSel = document.getElementById('schedMinuteSelect');
+  let h12 = parseInt(hSel ? hSel.value : '9', 10);
+  let mins = parseInt(mSel ? mSel.value : '0', 10);
+  let h24 = h12;
+  if (_schedSelectedPeriod === 'PM' && h12 < 12) h24 = h12 + 12;
+  if (_schedSelectedPeriod === 'AM' && h12 === 12) h24 = 0;
+
+  const target = new Date(_schedSelectedDate);
+  target.setHours(h24, mins, 0, 0);
+  return target;
+}
+
+function updatePickerModalPreview() {
+  const target = getSelectedModalTime();
+  const txt = document.getElementById('schedModalPreviewText');
+  const badge = document.getElementById('schedModalRelBadge');
+  if (txt) txt.textContent = formatDateTimeReadable(target);
+  if (badge) badge.textContent = formatRelativeTimeDiff(target);
+}
+
+function setSchedPeriod(period) {
+  _schedSelectedPeriod = period;
+  const amBtn = document.getElementById('schedAmBtn');
+  const pmBtn = document.getElementById('schedPmBtn');
+  if (amBtn) amBtn.classList.toggle('active', period === 'AM');
+  if (pmBtn) pmBtn.classList.toggle('active', period === 'PM');
+  updatePickerModalPreview();
+}
+
+function setCommonTime(hours12, mins, period) {
+  const hSel = document.getElementById('schedHourSelect');
+  const mSel = document.getElementById('schedMinuteSelect');
+  if (hSel) hSel.value = String(hours12);
+  if (mSel) mSel.value = String(mins).padStart(2, '0');
+  setSchedPeriod(period);
+}
+
+function onTimeSelectionChange() {
+  updatePickerModalPreview();
+}
+
+function confirmDateTimePicker() {
+  const target = getSelectedModalTime();
+  const now = new Date();
+  if (target.getTime() <= now.getTime()) {
+    showToast('Notice: The selected time has already passed. Please select a future time.');
+    return;
+  }
+  _schedSelectedDate = target;
+  applyChosenScheduleDate(target);
+  closeDateTimePicker();
+}
+
 function initScheduleTab() {
   fetchCachedRoles().then(() => {
     renderRolePills('schedRolePills', [], updateSchedPreview);
     setupSpecificAutocomplete('schedSpecificInput', 'schedSpecificDropdown', 'schedSpecificChips', '_schedSpecificRecipients', updateSchedPreview);
     loadScheduledQueue();
-    const now = new Date(Date.now() + 3600000);
-    const pad = n => String(n).padStart(2, '0');
-    const localIso = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}T${pad(now.getHours())}:${pad(now.getMinutes())}`;
-    const inp = document.getElementById('schedTimeInput');
-    if (inp && !inp.value) inp.value = localIso;
+    applySchedulePreset(60, false);
   });
 }
 
@@ -4860,7 +5708,7 @@ async function loadScheduledQueue() {
             const msgSnippet = esc((item.message || '').slice(0, 48)) || '(attachment only)';
             return `
               <tr>
-                <td style="white-space:nowrap;font-weight:600;">${esc(item.scheduled_time || '')}</td>
+                <td style="white-space:nowrap;font-weight:600;">${formatScheduledTimeSnippet(item.scheduled_time)}</td>
                 <td><span class="stat-pill" style="font-size:11px;">${esc(item.target_audience || 'both')}</span> <span style="font-size:11px;color:var(--muted)">(${esc(rolesStr)})</span></td>
                 <td>${msgSnippet}</td>
                 <td style="font-size:11px;">${hasAtt}</td>
@@ -5545,6 +6393,7 @@ loadStats();
 loadChatSuggestions('');
 loadAskHistory();
 runSearch(true);
+checkActiveBroadcastOnLoad();
 </script>
 </body>
 </html>
