@@ -3320,9 +3320,10 @@ class DatabaseManager:
         """List scheduled campaigns sorted by scheduled time."""
         params: list[Any] = []
         where = ""
-        if status:
+        clean_status = (status or "").strip().lower()
+        if clean_status and clean_status != "all":
             where = "WHERE status = ?"
-            params.append(status.strip())
+            params.append(clean_status)
 
         sql = f"""
             SELECT id, message, attachment_path, attachment_filename, attachment_mimetype,

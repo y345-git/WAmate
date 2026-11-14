@@ -2597,6 +2597,36 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
     border-color: rgba(0, 224, 168, 0.35);
     color: var(--accent);
   }
+  .bcast-var-chips {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .bcast-var-chip {
+    background: rgba(0, 224, 168, 0.08);
+    border: 1px solid rgba(0, 224, 168, 0.25);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 600;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    padding: 2px 7px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .bcast-var-chip:hover {
+    background: var(--accent);
+    color: #061017;
+    border-color: var(--accent);
+  }
+  .bcast-name-preview {
+    background: #061017;
+    border: 1px solid rgba(0, 224, 168, 0.25);
+    border-radius: 6px;
+    padding: 7px 11px;
+    font-size: 12px;
+    line-height: 1.45;
+  }
   .sched-picker-modal {
     max-width: 620px;
   }
@@ -3146,12 +3176,21 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
             <h3 class="bcast-title">2. Message &amp; Media</h3>
           </div>
           <div class="bcast-field">
-            <label class="bcast-label">Message Text</label>
-            <textarea id="sendMessageText" class="bcast-textarea" rows="6" placeholder="Write your broadcast message here...&#10;&#10;Supported formatting:&#10;*bold* _italic_ ~strike~ ```monospace```&#10;Use {name} to personalize with recipient's name" oninput="updateCharCount('sendMessageText', 'sendCharCount')"></textarea>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+              <label class="bcast-label" style="margin-bottom:0;">Message Text</label>
+              <div class="bcast-var-chips">
+                <span style="font-size:11px;color:var(--muted);margin-right:2px;">Tags:</span>
+                <button type="button" class="bcast-var-chip" onclick="insertVariable('sendMessageText', '{name}')" title="Insert recipient's full or saved contact name">+ {name}</button>
+                <button type="button" class="bcast-var-chip" onclick="insertVariable('sendMessageText', '{first_name}')" title="Insert recipient's first name">+ {first_name}</button>
+                <button type="button" class="bcast-var-chip" onclick="insertVariable('sendMessageText', '{phone}')" title="Insert recipient's phone number">+ {phone}</button>
+              </div>
+            </div>
+            <textarea id="sendMessageText" class="bcast-textarea" rows="6" placeholder="Write your broadcast message here...&#10;&#10;Supported formatting:&#10;*bold* _italic_ ~strike~ ```monospace```&#10;Use {name} to personalize with recipient's name" oninput="onMessageInputChanged('sendMessageText', 'sendCharCount', 'sendMessagePersonalizedPreview')"></textarea>
             <div class="bcast-meta-row" style="display:flex; justify-content:space-between; margin-top:4px;">
               <span id="sendCharCount" class="bcast-hint" style="font-size:11px; color:var(--muted);">0 characters</span>
               <span class="bcast-hint" style="font-size:11px; color:var(--muted);">Markdown &amp; {name} personalization supported</span>
             </div>
+            <div id="sendMessagePersonalizedPreview" class="bcast-name-preview" style="display:none;margin-top:6px;"></div>
           </div>
           <div class="bcast-field">
             <label class="bcast-label">Attachment (Optional — Image, Video, Audio, Document)</label>
@@ -3248,8 +3287,17 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
             <div id="schedSpecificChips" class="bcast-chips-container"></div>
           </div>
           <div class="bcast-field">
-            <label class="bcast-label">Message</label>
-            <textarea id="schedMessageText" class="bcast-textarea" rows="4" placeholder="Message content to schedule..."></textarea>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+              <label class="bcast-label" style="margin-bottom:0;">Message</label>
+              <div class="bcast-var-chips">
+                <span style="font-size:11px;color:var(--muted);margin-right:2px;">Tags:</span>
+                <button type="button" class="bcast-var-chip" onclick="insertVariable('schedMessageText', '{name}')" title="Insert recipient's full or saved contact name">+ {name}</button>
+                <button type="button" class="bcast-var-chip" onclick="insertVariable('schedMessageText', '{first_name}')" title="Insert recipient's first name">+ {first_name}</button>
+                <button type="button" class="bcast-var-chip" onclick="insertVariable('schedMessageText', '{phone}')" title="Insert recipient's phone number">+ {phone}</button>
+              </div>
+            </div>
+            <textarea id="schedMessageText" class="bcast-textarea" rows="4" placeholder="Message content to schedule...&#10;Use {name} to personalize with recipient's name" oninput="onMessageInputChanged('schedMessageText', null, 'schedMessagePersonalizedPreview')"></textarea>
+            <div id="schedMessagePersonalizedPreview" class="bcast-name-preview" style="display:none;margin-top:6px;"></div>
           </div>
           <div class="bcast-field">
             <label class="bcast-label">Attachment (Optional)</label>
@@ -4989,6 +5037,55 @@ function updateCharCount(textareaId, counterId) {
   if (ta && el) el.textContent = `${ta.value.length} characters`;
 }
 
+function onMessageInputChanged(textareaId, counterId, previewId) {
+  if (counterId) updateCharCount(textareaId, counterId);
+  updatePersonalizationPreview(textareaId, previewId);
+}
+
+function insertVariable(textareaId, varName) {
+  const ta = document.getElementById(textareaId);
+  if (!ta) return;
+  const start = ta.selectionStart != null ? ta.selectionStart : ta.value.length;
+  const end = ta.selectionEnd != null ? ta.selectionEnd : ta.value.length;
+  const text = ta.value;
+  ta.value = text.substring(0, start) + varName + text.substring(end);
+  ta.selectionStart = ta.selectionEnd = start + varName.length;
+  ta.focus();
+  if (textareaId === 'sendMessageText') {
+    onMessageInputChanged('sendMessageText', 'sendCharCount', 'sendMessagePersonalizedPreview');
+  } else if (textareaId === 'schedMessageText') {
+    onMessageInputChanged('schedMessageText', null, 'schedMessagePersonalizedPreview');
+  }
+}
+
+function updatePersonalizationPreview(textareaId, previewId) {
+  const ta = document.getElementById(textareaId);
+  const prevEl = document.getElementById(previewId);
+  if (!ta || !prevEl) return;
+  const val = ta.value || '';
+  if (/\{name\}|\{first_name\}|\{phone\}/i.test(val)) {
+    let sampleName = 'Alex Smith';
+    let samplePhone = '+91 98000 00000';
+    const recs = window._currentSendRecipients || [];
+    if (recs.length > 0) {
+      const rec = recs[0];
+      sampleName = rec.name || rec.push_name || rec.phone || sampleName;
+      samplePhone = rec.phone || samplePhone;
+    }
+    const sampleFirstName = sampleName.split(' ')[0] || sampleName;
+    const previewText = val
+      .replace(/\{name\}/gi, sampleName)
+      .replace(/\{first_name\}/gi, sampleFirstName)
+      .replace(/\{phone\}/gi, samplePhone);
+
+    prevEl.style.display = 'block';
+    prevEl.innerHTML = `<span style="font-size:11px;font-weight:700;color:var(--accent);margin-right:6px;">Personalization Preview (${esc(sampleName)}):</span><span style="color:var(--text);font-style:italic;">"${esc(previewText)}"</span>`;
+  } else {
+    prevEl.style.display = 'none';
+    prevEl.innerHTML = '';
+  }
+}
+
 function toggleRecipientChips(listId) {
   const el = document.getElementById(listId);
   if (!el) return;
@@ -5012,6 +5109,9 @@ async function updateSendPreview() {
         seen.add(s.jid);
       }
     });
+
+    window._currentSendRecipients = recipients;
+    updatePersonalizationPreview('sendMessageText', 'sendMessagePersonalizedPreview');
 
     const total = recipients.length;
     const contactsCount = recipients.filter(r => !r.is_group).length;
@@ -5714,8 +5814,8 @@ async function loadScheduledQueue() {
                 <td style="font-size:11px;">${hasAtt}</td>
                 <td><span class="badge-status ${statusClass}">${esc(item.status || 'pending')}</span></td>
                 <td style="white-space:nowrap;">
-                  ${isPending ? `<button type="button" class="primary-btn-sm" onclick="sendScheduledNow(${item.id})">Send Now</button> <button type="button" class="ghost-btn-sm" onclick="cancelScheduled(${item.id})">Cancel</button>` : ''}
-                  <button type="button" class="ghost-btn-sm" style="color:var(--danger)" onclick="deleteScheduled(${item.id})">Delete</button>
+                  ${isPending ? `<button type="button" class="primary-btn-sm" onclick="sendScheduledNow('${esc(item.id)}')">Send Now</button> <button type="button" class="ghost-btn-sm" onclick="cancelScheduled('${esc(item.id)}')">Cancel</button>` : ''}
+                  <button type="button" class="ghost-btn-sm" style="color:var(--danger)" onclick="deleteScheduled('${esc(item.id)}')">Delete</button>
                 </td>
               </tr>
             `;
@@ -5734,7 +5834,7 @@ async function sendScheduledNow(campId) {
     const res = await fetch('/api/scheduled/send_now', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: campId }),
+      body: JSON.stringify({ id: String(campId) }),
     });
     const data = await res.json();
     if (!res.ok || !data.ok) throw new Error(data.error || 'Failed');
@@ -5750,7 +5850,7 @@ async function cancelScheduled(campId) {
     const res = await fetch('/api/scheduled/cancel', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: campId }),
+      body: JSON.stringify({ id: String(campId) }),
     });
     const data = await res.json();
     if (!res.ok || !data.ok) throw new Error(data.error || 'Failed');
@@ -5767,7 +5867,7 @@ async function deleteScheduled(campId) {
     const res = await fetch('/api/scheduled/delete', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: campId }),
+      body: JSON.stringify({ id: String(campId) }),
     });
     const data = await res.json();
     if (!res.ok || !data.ok) throw new Error(data.error || 'Failed');
@@ -7387,7 +7487,7 @@ class WebUIServer:
 
                 if path == "/api/scheduled/cancel":
                     payload = self._read_json_body(max_bytes=4096)
-                    camp_id = int(payload.get("id") or 0) if payload else 0
+                    camp_id = str(payload.get("id") or "").strip() if payload else ""
                     if not camp_id:
                         self._send_json({"error": "id is required"}, status=400)
                         return
@@ -7397,7 +7497,7 @@ class WebUIServer:
 
                 if path == "/api/scheduled/delete":
                     payload = self._read_json_body(max_bytes=4096)
-                    camp_id = int(payload.get("id") or 0) if payload else 0
+                    camp_id = str(payload.get("id") or "").strip() if payload else ""
                     if not camp_id:
                         self._send_json({"error": "id is required"}, status=400)
                         return
@@ -7407,7 +7507,7 @@ class WebUIServer:
 
                 if path == "/api/scheduled/send_now":
                     payload = self._read_json_body(max_bytes=4096)
-                    camp_id = int(payload.get("id") or 0) if payload else 0
+                    camp_id = str(payload.get("id") or "").strip() if payload else ""
                     if not camp_id:
                         self._send_json({"error": "id is required"}, status=400)
                         return

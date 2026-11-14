@@ -127,22 +127,26 @@ def test_all():
     assert list_res["total"] >= 1
     print("   [OK] Role assignment and audience filtering work accurately.")
 
-    # 3. Test Broadcast sending
-    print("\n3. Testing Broadcast message dispatch...")
+    # 3. Test Broadcast sending with {name} personalization
+    print("\n3. Testing Broadcast message dispatch with {name} personalization...")
+    mock_neonize.sent_messages.clear()
     targets = [{"jid": c1, "name": "Alice"}, {"jid": g1, "name": "Investors"}]
     res = bot.send_broadcast_message(
         recipients=targets,
-        message="Important announcement for *VIPs*",
+        message="Hello {name}! Important announcement for *VIPs*",
         min_delay=0.01,
         max_delay=0.02,
     )
     assert res["total"] == 2
     assert res["sent"] == 2
     assert res["failed"] == 0
+    assert "Hello Alice!" in mock_neonize.sent_messages[0]["message"]
+    assert "Hello Investors!" in mock_neonize.sent_messages[1]["message"]
+    print("   [OK] {name} personalization dynamically verified.")
 
     db.record_campaign_history(
         campaign_type="Instant Broadcast",
-        message="Important announcement for *VIPs*",
+        message="Hello {name}! Important announcement for *VIPs*",
         attachment_path="",
         attachment_filename="",
         roles=["VIP"],
@@ -160,15 +164,20 @@ def test_all():
     assert history[0]["sent_count"] == 2
     print("   [OK] Broadcast dispatch and history recording verified.")
 
-    # 4. Test Scheduled Campaigns
-    print("\n4. Testing Scheduled Campaign creation and trigger...")
+    # 4. Test Scheduled Campaigns & status="all" querying
+    print("\n4. Testing Scheduled Campaign creation, status=all query and trigger...")
     camp_id = db.create_scheduled_campaign(
-        message="Scheduled reminder",
+        message="Scheduled reminder for {name}",
         scheduled_time="2026-11-14T12:00",
         scheduled_ts=int(time.time()) - 10,  # Already due
         target_audience="contacts",
         roles=["Clients"],
     )
+    # Verify get_scheduled_campaigns(status="all") returns this pending campaign
+    all_camps = db.get_scheduled_campaigns(status="all")
+    assert len(all_camps) >= 1, "get_scheduled_campaigns(status='all') must return campaigns"
+    assert any(c["id"] == camp_id for c in all_camps)
+
     due = db.get_due_scheduled_campaigns()
     assert len(due) >= 1 and due[0]["id"] == camp_id
 
@@ -177,7 +186,17 @@ def test_all():
     c_updated = db.get_scheduled_campaign(camp_id)
     assert c_updated["status"] == "sent"
     assert c_updated["sent_count"] == 1
-    print("   [OK] Scheduled campaign lifecycle verified.")
+
+    # Verify cancel and delete on string ID
+    camp_id2 = db.create_scheduled_campaign(
+        message="Future test",
+        scheduled_time="2026-11-20T10:00",
+        scheduled_ts=int(time.time()) + 100000,
+        target_audience="all",
+    )
+    assert db.cancel_scheduled_campaign(camp_id2) is True
+    assert db.delete_scheduled_campaign(camp_id2) is True
+    print("   [OK] Scheduled campaign lifecycle and status=all queue verified.")
 
     # 5. Test Excel Export and Import
     print("\n5. Testing Excel Workbook export and import...")

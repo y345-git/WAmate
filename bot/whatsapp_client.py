@@ -1454,6 +1454,21 @@ class WhatsAppBot:
                 continue
 
             try:
+                # Personalize message text and caption for this specific recipient
+                display_name = (rec.get("name") or rec.get("push_name") or "").strip()
+                if not display_name:
+                    display_name = rec.get("phone") or str(raw_jid).split("@")[0]
+                first_name = display_name.split()[0] if display_name else display_name
+                phone_num = rec.get("phone") or str(raw_jid).split("@")[0]
+
+                personalized_text = msg_text
+                if "{name}" in personalized_text.lower():
+                    personalized_text = re.sub(r"\{name\}", display_name, personalized_text, flags=re.IGNORECASE)
+                if "{first_name}" in personalized_text.lower():
+                    personalized_text = re.sub(r"\{first_name\}", first_name, personalized_text, flags=re.IGNORECASE)
+                if "{phone}" in personalized_text.lower():
+                    personalized_text = re.sub(r"\{phone\}", phone_num, personalized_text, flags=re.IGNORECASE)
+
                 resp = None
                 fname = ""
                 mime = ""
@@ -1461,23 +1476,23 @@ class WhatsAppBot:
                     fname = attachment_filename or att_path.name
                     mime = attachment_mimetype or "application/octet-stream"
                     if mime.startswith("image/"):
-                        resp = self.client.send_image(to=target_dest, file=str(att_path), caption=msg_text)
+                        resp = self.client.send_image(to=target_dest, file=str(att_path), caption=personalized_text)
                     elif mime.startswith("video/"):
-                        resp = self.client.send_video(to=target_dest, file=str(att_path), caption=msg_text)
+                        resp = self.client.send_video(to=target_dest, file=str(att_path), caption=personalized_text)
                     elif mime.startswith("audio/"):
                         resp = self.client.send_audio(to=target_dest, file=str(att_path))
-                        if msg_text:
-                            self.client.send_message(target_dest, msg_text)
+                        if personalized_text:
+                            self.client.send_message(target_dest, personalized_text)
                     else:
                         resp = self.client.send_document(
                             to=target_dest,
                             file=str(att_path),
                             filename=fname,
                             mimetype=mime,
-                            caption=msg_text,
+                            caption=personalized_text,
                         )
                 else:
-                    resp = self.client.send_message(target_dest, msg_text)
+                    resp = self.client.send_message(target_dest, personalized_text)
 
                 msg_id = getattr(resp, "ID", "") or f"bcast_{int(time.time() * 1000)}_{idx}"
                 if resp and hasattr(resp, "ID"):
@@ -1497,7 +1512,7 @@ class WhatsAppBot:
                         chat_name=rec_name,
                         sender_jid=getattr(self, "my_lid_jid", "") or getattr(self, "my_canonical_jid", "") or "me",
                         sender_name="You",
-                        text=msg_text,
+                        text=personalized_text,
                         timestamp=int(time.time()),
                         is_from_me=True,
                         is_group="@g.us" in chat_jid_to_record,
@@ -1568,13 +1583,23 @@ class WhatsAppBot:
 
         self.db.update_scheduled_campaign_status(camp_id, "sending")
         audience = camp.get("target_audience", "both")
-        recipients = []
+        roles = camp.get("roles", [])
+        recipients = self.db.lookup_recipients_by_roles(roles, target_audience=audience)
 
-        if audience == "specific":
-            recipients = camp.get("specific_recipients", [])
-        else:
-            roles = camp.get("roles", [])
-            recipients = self.db.lookup_recipients_by_roles(roles, target_audience=audience)
+        # Merge specific recipients if configured
+        specific = camp.get("specific_recipients", [])
+        seen_jids = {r.get("jid") for r in recipients if r.get("jid")}
+        for item in specific:
+            s_jid = (item.get("jid") if isinstance(item, dict) else str(item)).strip()
+            if s_jid and s_jid not in seen_jids:
+                recipients.append({
+                    "jid": s_jid,
+                    "name": (item.get("name") if isinstance(item, dict) else "") or s_jid,
+                    "phone": (item.get("phone") if isinstance(item, dict) else "") or s_jid.split("@")[0],
+                    "is_group": "@g.us" in s_jid,
+                    "roles": [],
+                })
+                seen_jids.add(s_jid)
 
         if not recipients:
             self.db.update_scheduled_campaign_status(
@@ -1583,11 +1608,12 @@ class WhatsAppBot:
             )
             return False, "No matching recipients found"
 
+        att_fname = camp.get("attachment_filename") or camp.get("attachment_name", "")
         result = self.send_broadcast_message(
             recipients=recipients,
             message=camp.get("message", ""),
             attachment_path=camp.get("attachment_path", ""),
-            attachment_filename=camp.get("attachment_name", ""),
+            attachment_filename=att_fname,
             attachment_mimetype=camp.get("attachment_mimetype", ""),
         )
 
@@ -1614,7 +1640,7 @@ class WhatsAppBot:
             finished_at=result["finished_at"],
             logs=result["logs"],
             attachment_path=camp.get("attachment_path", ""),
-            attachment_filename=camp.get("attachment_name", ""),
+            attachment_filename=att_fname,
             campaign_type="scheduled",
             camp_id=camp_id,
         )
