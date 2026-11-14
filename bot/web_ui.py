@@ -546,7 +546,7 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
   .grow { flex: 1; min-width: 210px; }
   .chat-filter-box { min-width: 195px; flex: 0.72; max-width: 280px; }
 
-  button.primary-btn {
+  button.primary-btn, a.primary-btn, .primary-btn {
     background: var(--accent);
     color: #052019;
     border: none;
@@ -558,13 +558,33 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
     display: inline-flex;
     align-items: center;
     gap: 6px;
+    text-decoration: none;
     transition: transform 0.12s ease, filter 0.15s ease, box-shadow 0.15s ease;
     box-shadow: 0 2px 10px rgba(0, 200, 150, 0.22);
   }
-  button.primary-btn:hover { filter: brightness(1.08); }
-  button.primary-btn:active { transform: scale(0.98); }
+  button.primary-btn:hover, a.primary-btn:hover, .primary-btn:hover { filter: brightness(1.08); }
+  button.primary-btn:active, a.primary-btn:active, .primary-btn:active { transform: scale(0.98); }
 
-  button.ghost-btn, a.ghost-btn {
+  button.primary-btn-sm, a.primary-btn-sm, .primary-btn-sm {
+    background: var(--accent);
+    color: #052019;
+    border: none;
+    padding: 6px 13px;
+    border-radius: 8px;
+    font-weight: 600;
+    cursor: pointer;
+    font-size: 0.8rem;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    text-decoration: none;
+    transition: transform 0.12s ease, filter 0.15s ease, box-shadow 0.15s ease;
+    box-shadow: 0 2px 8px rgba(0, 200, 150, 0.18);
+  }
+  button.primary-btn-sm:hover, a.primary-btn-sm:hover, .primary-btn-sm:hover { filter: brightness(1.1); }
+  button.primary-btn-sm:active, a.primary-btn-sm:active, .primary-btn-sm:active { transform: scale(0.98); }
+
+  button.ghost-btn, a.ghost-btn, .ghost-btn {
     background: var(--card);
     color: var(--text-soft);
     border: 1px solid var(--border);
@@ -578,6 +598,32 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
     align-items: center;
     gap: 5px;
     transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+  }
+  button.ghost-btn:hover, a.ghost-btn:hover, .ghost-btn:hover {
+    background: #1e303e;
+    border-color: rgba(255, 255, 255, 0.18);
+    color: var(--text);
+  }
+
+  button.ghost-btn-sm, a.ghost-btn-sm, .ghost-btn-sm {
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--text-soft);
+    border: 1px solid var(--border);
+    padding: 4px 9px;
+    border-radius: 7px;
+    cursor: pointer;
+    font-size: 0.77rem;
+    font-weight: 500;
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    transition: all 0.15s ease;
+  }
+  button.ghost-btn-sm:hover, a.ghost-btn-sm:hover, .ghost-btn-sm:hover {
+    background: rgba(255, 255, 255, 0.09);
+    color: var(--text);
+    border-color: rgba(255, 255, 255, 0.18);
   }
   button.ghost-btn:hover, a.ghost-btn:hover {
     background: var(--card-hover);
@@ -2019,31 +2065,87 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
   .bcast-roles-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-    gap: 12px;
-    margin-top: 10px;
+    gap: 14px;
+    margin-top: 14px;
   }
   .bcast-role-card {
     background: #091219;
-    border: 1px solid var(--border);
-    border-radius: 10px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-left: 4px solid var(--role-color, #00c896);
+    border-radius: 12px;
     padding: 12px 14px;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 8px;
+    gap: 10px;
+    transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+  }
+  .bcast-role-card:hover {
+    background: #0d1a24;
+    transform: translateY(-2px);
+    border-color: rgba(255, 255, 255, 0.16);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
   }
   .bcast-role-card-left {
     display: flex;
     align-items: center;
-    gap: 9px;
+    gap: 10px;
+    min-width: 0;
+  }
+  .role-avatar-dot {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .bcast-role-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
   }
   .bcast-role-card-name {
     font-weight: 600;
-    font-size: 14px;
+    font-size: 13.5px;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
-  .bcast-role-card-count {
+  .bcast-role-card-meta {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .role-assigned-pill {
     font-size: 11px;
     color: var(--muted);
+    background: rgba(255, 255, 255, 0.04);
+    padding: 2px 7px;
+    border-radius: 9999px;
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .bcast-role-del-btn {
+    background: transparent;
+    border: 1px solid rgba(244, 91, 105, 0.2);
+    color: #f45b69;
+    border-radius: 7px;
+    padding: 6px;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s ease;
+    flex-shrink: 0;
+  }
+  .bcast-role-del-btn:hover {
+    background: rgba(244, 91, 105, 0.18);
+    border-color: #f45b69;
+    transform: scale(1.05);
   }
   .bcast-role-creator-bar {
     display: flex;
@@ -2051,8 +2153,44 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
     align-items: center;
     background: #091219;
     padding: 10px 14px;
-    border-radius: 8px;
-    border: 1px solid var(--border);
+    border-radius: 10px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    flex-wrap: wrap;
+  }
+  .bcast-palette-swatches {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .swatch-btn {
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: var(--swatch-color);
+    border: 2px solid transparent;
+    cursor: pointer;
+    transition: transform 0.15s ease, border-color 0.15s ease;
+    padding: 0;
+  }
+  .swatch-btn:hover {
+    transform: scale(1.22);
+    border-color: #ffffff;
+  }
+  .quick-role-seed-btn {
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px dashed rgba(255, 255, 255, 0.2);
+    border-radius: 9999px;
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 500;
+    padding: 5px 12px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .quick-role-seed-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent);
+    background: var(--accent-dim);
   }
   .bcast-color-picker-wrap {
     display: flex;
@@ -2062,7 +2200,7 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
     color: var(--muted);
   }
   .bcast-color-input {
-    width: 34px;
+    width: 32px;
     height: 30px;
     border: 1px solid var(--border);
     border-radius: 6px;
@@ -2074,6 +2212,181 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
     gap: 20px;
+  }
+  .bcast-excel-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 22px 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+  .bcast-card-title-wrap {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .bcast-card-icon {
+    width: 38px;
+    height: 38px;
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+  .excel-icon {
+    background: rgba(16, 185, 129, 0.15);
+    color: #10b981;
+    border: 1px solid rgba(16, 185, 129, 0.3);
+  }
+  .import-icon {
+    background: rgba(56, 189, 248, 0.15);
+    color: #38bdf8;
+    border: 1px solid rgba(56, 189, 248, 0.3);
+  }
+  .bcast-subtitle {
+    font-size: 12px;
+    color: var(--muted);
+    display: block;
+    margin-top: 2px;
+  }
+  .bcast-sheet-highlights {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin: 4px 0 10px 0;
+  }
+  .sheet-pill {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    padding: 8px 12px;
+    border-radius: 8px;
+    font-size: 12px;
+    color: var(--text-soft);
+  }
+  .sheet-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .bcast-excel-download-btn {
+    background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+    color: #ffffff !important;
+    text-decoration: none !important;
+    border-radius: 9px;
+    padding: 12px 20px;
+    font-weight: 700;
+    font-size: 13.5px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 9px;
+    box-shadow: 0 4px 18px rgba(16, 185, 129, 0.32);
+    transition: all 0.18s cubic-bezier(0.4, 0, 0.2, 1);
+    cursor: pointer;
+    width: 100%;
+    box-sizing: border-box;
+  }
+  .bcast-excel-download-btn:hover {
+    filter: brightness(1.1);
+    transform: translateY(-1px);
+    box-shadow: 0 6px 24px rgba(16, 185, 129, 0.45);
+  }
+  .bcast-excel-download-btn:active {
+    transform: scale(0.98);
+  }
+  .bcast-dropzone {
+    border: 2px dashed rgba(255, 255, 255, 0.14);
+    background: rgba(255, 255, 255, 0.02);
+    border-radius: 10px;
+    padding: 18px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.2s ease;
+  }
+  .bcast-dropzone:hover, .bcast-dropzone.dragover {
+    border-color: var(--accent);
+    background: rgba(0, 200, 150, 0.06);
+  }
+  .ico-drop {
+    width: 32px;
+    height: 32px;
+    color: var(--muted);
+    margin: 0 auto 6px auto;
+    display: block;
+  }
+  .bcast-drop-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+  }
+  .browse-link {
+    color: var(--accent);
+    text-decoration: underline;
+  }
+  .bcast-drop-sub {
+    font-size: 11px;
+    color: var(--muted);
+    margin-top: 3px;
+  }
+  .bcast-drop-selected {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+  }
+  .file-badge {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--accent);
+    background: var(--accent-dim);
+    padding: 5px 12px;
+    border-radius: 6px;
+  }
+  .file-size {
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .file-clear-btn {
+    background: transparent;
+    border: none;
+    color: var(--danger);
+    font-size: 16px;
+    cursor: pointer;
+    padding: 0 4px;
+  }
+  .bcast-excel-import-btn {
+    background: linear-gradient(135deg, #00c896 0%, #009e75 100%);
+    color: #04241b;
+    border: none;
+    border-radius: 9px;
+    padding: 12px 20px;
+    font-weight: 700;
+    font-size: 13.5px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 9px;
+    box-shadow: 0 4px 18px rgba(0, 200, 150, 0.32);
+    transition: all 0.18s cubic-bezier(0.4, 0, 0.2, 1);
+    cursor: pointer;
+    width: 100%;
+    margin-top: 4px;
+    box-sizing: border-box;
+  }
+  .bcast-excel-import-btn:hover {
+    filter: brightness(1.1);
+    transform: translateY(-1px);
+    box-shadow: 0 6px 24px rgba(0, 200, 150, 0.45);
+  }
+  .bcast-excel-import-btn:active {
+    transform: scale(0.98);
   }
   .bcast-feature-list {
     margin: 0;
@@ -2571,15 +2884,28 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
     <div id="bcast-panel-roles" class="bcast-sub-panel">
       <div class="bcast-card full-card">
         <div class="bcast-card-hdr">
-          <h3 class="bcast-title">Manage Custom Roles</h3>
+          <div>
+            <h3 class="bcast-title">Manage Custom Roles</h3>
+            <span class="bcast-subtitle">Define role tags to organize contacts and broadcast targeted updates</span>
+          </div>
         </div>
         <div class="bcast-role-creator-bar">
-          <input id="newRoleNameInput" type="text" class="bcast-input grow" placeholder="Enter new role name (e.g. VIP, Clients, Family, Nature)..." maxlength="50"/>
-          <div class="bcast-color-picker-wrap">
-            <label for="newRoleColorInput">Badge Color:</label>
-            <input id="newRoleColorInput" type="color" value="#00c896" class="bcast-color-input"/>
+          <input id="newRoleNameInput" type="text" class="bcast-input grow" placeholder="Enter new role name (e.g. VIP, Clients, Family, Leads)..." maxlength="50" onkeydown="if(event.key==='Enter'){event.preventDefault();addNewRole();}"/>
+          <div class="bcast-palette-swatches">
+            <button type="button" class="swatch-btn" style="--swatch-color:#f59e0b;" onclick="selectRoleColor('#f59e0b')" title="Gold / VIP"></button>
+            <button type="button" class="swatch-btn" style="--swatch-color:#38bdf8;" onclick="selectRoleColor('#38bdf8')" title="Sky Blue / Clients"></button>
+            <button type="button" class="swatch-btn" style="--swatch-color:#6366f1;" onclick="selectRoleColor('#6366f1')" title="Indigo / Business"></button>
+            <button type="button" class="swatch-btn" style="--swatch-color:#ec4899;" onclick="selectRoleColor('#ec4899')" title="Pink / Friends"></button>
+            <button type="button" class="swatch-btn" style="--swatch-color:#10b981;" onclick="selectRoleColor('#10b981')" title="Emerald / Family"></button>
+            <button type="button" class="swatch-btn" style="--swatch-color:#84cc16;" onclick="selectRoleColor('#84cc16')" title="Lime / Nature"></button>
           </div>
-          <button type="button" class="primary-btn-sm" onclick="addNewRole()">Create Role</button>
+          <div class="bcast-color-picker-wrap">
+            <input id="newRoleColorInput" type="color" value="#00c896" class="bcast-color-input" title="Custom color picker"/>
+          </div>
+          <button type="button" class="primary-btn-sm" onclick="addNewRole()">
+            <svg class="ico-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            <span>Create Role</span>
+          </button>
         </div>
         <div id="rolesManagerGrid" class="bcast-roles-grid">
           <div class="bcast-empty">Loading roles...</div>
@@ -2604,25 +2930,43 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
     <!-- Sub-panel 7: Excel Export / Import -->
     <div id="bcast-panel-excel" class="bcast-sub-panel">
       <div class="bcast-excel-grid">
-        <div class="bcast-card">
+        <div class="bcast-card bcast-excel-card">
           <div class="bcast-card-hdr">
-            <h3 class="bcast-title">Backup / Export to Excel</h3>
+            <div class="bcast-card-title-wrap">
+              <div class="bcast-card-icon excel-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="16" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+              </div>
+              <div>
+                <h3 class="bcast-title">Backup &amp; Export to Excel</h3>
+                <span class="bcast-subtitle">Address book, groups &amp; custom roles</span>
+              </div>
+            </div>
           </div>
-          <p class="bcast-desc">Download your entire WhatsApp address book, custom contacts, groups, roles, and notes formatted into a multi-sheet Microsoft Excel (.xlsx) workbook.</p>
-          <ul class="bcast-feature-list">
-            <li><strong>Roles Sheet:</strong> Names, theme colors, and creation timestamps.</li>
-            <li><strong>Contacts Sheet:</strong> Names, phones, push names, role tags, and notes.</li>
-            <li><strong>Groups Sheet:</strong> Group subjects, JIDs, and assigned roles.</li>
-          </ul>
-          <a href="/api/campaigns/export_excel" download="wamate_contacts_roles.xlsx" class="primary-btn bcast-btn" style="text-decoration:none; display:inline-flex;">
-            <svg class="ico-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-            <span>Download Excel Workbook (.xlsx)</span>
-          </a>
+          <p class="bcast-desc">Download your entire WhatsApp address book, custom contacts, groups, roles, and notes formatted into a multi-sheet Microsoft Excel (<code>.xlsx</code>) workbook.</p>
+          <div class="bcast-sheet-highlights">
+            <div class="sheet-pill"><span class="sheet-dot" style="background:#f59e0b;"></span><div><strong>Roles Sheet:</strong> Names, colors &amp; timestamps</div></div>
+            <div class="sheet-pill"><span class="sheet-dot" style="background:#38bdf8;"></span><div><strong>Contacts Sheet:</strong> Names, phones, push names, roles &amp; notes</div></div>
+            <div class="sheet-pill"><span class="sheet-dot" style="background:#10b981;"></span><div><strong>Groups Sheet:</strong> Group subjects, JIDs &amp; assigned roles</div></div>
+          </div>
+          <div style="margin-top:auto; padding-top:6px;">
+            <a href="/api/campaigns/export_excel" download="wamate_contacts_roles.xlsx" class="bcast-excel-download-btn">
+              <svg class="ico-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              <span>Download Excel Workbook (.xlsx)</span>
+            </a>
+          </div>
         </div>
 
-        <div class="bcast-card">
+        <div class="bcast-card bcast-excel-card">
           <div class="bcast-card-hdr">
-            <h3 class="bcast-title">Restore / Import from Excel</h3>
+            <div class="bcast-card-title-wrap">
+              <div class="bcast-card-icon import-icon">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+              </div>
+              <div>
+                <h3 class="bcast-title">Restore &amp; Import from Excel</h3>
+                <span class="bcast-subtitle">Sync bulk roles, contacts &amp; contact notes</span>
+              </div>
+            </div>
           </div>
           <p class="bcast-desc">Upload a previously exported or edited <code>.xlsx</code> workbook to restore contacts, sync role mappings, or batch-update contact notes.</p>
           <div class="bcast-field">
@@ -2634,10 +2978,22 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
           </div>
           <div class="bcast-field">
             <label class="bcast-label">Choose .xlsx File</label>
-            <input id="excelFileInput" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" class="bcast-input"/>
+            <div id="excelDropzone" class="bcast-dropzone" onclick="document.getElementById('excelFileInput').click()" ondragover="event.preventDefault(); this.classList.add('dragover');" ondragleave="this.classList.remove('dragover');" ondrop="event.preventDefault(); this.classList.remove('dragover'); handleExcelFileDrop(event);">
+              <input id="excelFileInput" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" style="display:none;" onchange="handleExcelFileSelect(this)"/>
+              <div id="excelDropPrompt">
+                <svg class="ico-drop" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                <div class="bcast-drop-title">Drop your <code>.xlsx</code> file here or <span class="browse-link">Browse</span></div>
+                <div class="bcast-drop-sub">Supports contacts, custom roles, group tags &amp; notes</div>
+              </div>
+              <div id="excelFileSelectedInfo" style="display:none;" class="bcast-drop-selected">
+                <span class="file-badge">📊 <span id="excelFileName">filename.xlsx</span></span>
+                <span id="excelFileSize" class="file-size">14 KB</span>
+                <button type="button" class="file-clear-btn" onclick="event.stopPropagation(); clearExcelFileInput();" title="Remove file">&times;</button>
+              </div>
+            </div>
           </div>
-          <button id="excelImportBtn" type="button" class="primary-btn bcast-btn" onclick="importExcelWorkbook()">
-            <svg class="ico-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          <button id="excelImportBtn" type="button" class="bcast-excel-import-btn" onclick="importExcelWorkbook()">
+            <svg class="ico-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
             <span>Import &amp; Restore Workbook</span>
           </button>
         </div>
@@ -4581,6 +4937,11 @@ function promptAddRole(jid, isGroup, currentRolesJson) {
   quickToggleRole(jid, match.name, true, isGroup);
 }
 
+function selectRoleColor(col) {
+  const inp = document.getElementById('newRoleColorInput');
+  if (inp) inp.value = col;
+}
+
 // Roles Manager
 async function loadRolesManager() {
   const grid = document.getElementById('rolesManagerGrid');
@@ -4588,23 +4949,63 @@ async function loadRolesManager() {
   try {
     const roles = await fetchCachedRoles(true);
     if (!roles.length) {
-      grid.innerHTML = '<div class="bcast-empty" style="grid-column:1/-1;padding:24px;text-align:center;color:var(--muted)">No custom roles yet. Use the bar above to create one.</div>';
-      return;
-    }
-    grid.innerHTML = roles.map(r => `
-      <div class="bcast-role-card">
-        <div class="bcast-role-card-left">
-          <span class="role-pill-dot" style="--pill-color:${esc(r.color || '#00c896')};width:12px;height:12px;"></span>
-          <div>
-            <div class="bcast-role-card-name">${esc(r.name)}</div>
-            <div class="bcast-role-card-count">${r.assigned_count || 0} assigned</div>
+      grid.innerHTML = `
+        <div class="bcast-empty" style="grid-column:1/-1;padding:32px 20px;text-align:center;">
+          <div style="font-size:32px;margin-bottom:8px;">🏷️</div>
+          <div style="font-weight:600;color:var(--text);font-size:15px;margin-bottom:6px;">No custom roles created yet</div>
+          <div style="font-size:13px;color:var(--muted);max-width:440px;margin:0 auto 16px;">Create roles above to group contacts and broadcast targeted updates in one click.</div>
+          <div style="display:flex;justify-content:center;gap:8px;flex-wrap:wrap;">
+            <button type="button" class="quick-role-seed-btn" onclick="quickCreateRole('VIP', '#f59e0b')">+ VIP</button>
+            <button type="button" class="quick-role-seed-btn" onclick="quickCreateRole('Clients', '#38bdf8')">+ Clients</button>
+            <button type="button" class="quick-role-seed-btn" onclick="quickCreateRole('Family', '#10b981')">+ Family</button>
+            <button type="button" class="quick-role-seed-btn" onclick="quickCreateRole('Business', '#6366f1')">+ Business</button>
+            <button type="button" class="quick-role-seed-btn" onclick="quickCreateRole('Friends', '#ec4899')">+ Friends</button>
           </div>
         </div>
-        <button type="button" class="ghost-btn-sm" style="color:var(--danger)" onclick="deleteRole(${escArg(r.name)})" title="Delete Role">✕</button>
-      </div>
-    `).join('');
+      `;
+      return;
+    }
+    grid.innerHTML = roles.map(r => {
+      const color = r.color || '#00c896';
+      const assigned = r.assigned_count ?? r.count ?? 0;
+      return `
+        <div class="bcast-role-card" style="--role-color:${esc(color)};">
+          <div class="bcast-role-card-left">
+            <span class="role-avatar-dot" style="background:${esc(color)};box-shadow:0 0 10px ${esc(color)}66;"></span>
+            <div class="bcast-role-info">
+              <div class="bcast-role-card-name" title="${esc(r.name)}">${esc(r.name)}</div>
+              <div class="bcast-role-card-meta">
+                <span class="role-assigned-pill">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="ico-xs"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/></svg>
+                  ${assigned} assigned
+                </span>
+              </div>
+            </div>
+          </div>
+          <button type="button" class="bcast-role-del-btn" onclick="deleteRole(${escArg(r.name)})" title="Delete Role &quot;${esc(r.name)}&quot;">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="ico-xs"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
+          </button>
+        </div>
+      `;
+    }).join('');
   } catch (e) {
     grid.innerHTML = `<div class="bcast-empty" style="color:var(--danger)">Error loading roles: ${esc(e.message)}</div>`;
+  }
+}
+
+async function quickCreateRole(name, color) {
+  try {
+    const res = await fetch('/api/roles', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, color }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || 'Failed');
+    showToast(`Role "${name}" created!`);
+    loadRolesManager();
+  } catch (e) {
+    showToast(`Failed creating role: ${e.message}`);
   }
 }
 
@@ -4665,6 +5066,7 @@ async function loadCampaignHistory(page = 0) {
     const res = await fetch(`/api/campaigns/history?q=${encodeURIComponent(q)}&limit=${BCAST_PAGE_SIZE}&offset=${offset}`);
     const data = await res.json();
     const items = data.history || [];
+    const total = data.total ?? items.length;
 
     if (!items.length) {
       container.innerHTML = '<div class="bcast-empty" style="padding:28px;text-align:center;color:var(--muted)">No campaign history recorded yet.</div>';
@@ -4769,7 +5171,45 @@ function viewCampaignLogs(logsJson, dateStr) {
   dlg.showModal();
 }
 
-// Excel Import
+// Excel Dropzone & Import
+function handleExcelFileSelect(input) {
+  const file = input && input.files && input.files[0];
+  displayExcelFileInfo(file);
+}
+
+function handleExcelFileDrop(event) {
+  const dt = event.dataTransfer;
+  if (!dt || !dt.files || !dt.files.length) return;
+  const file = dt.files[0];
+  const inp = document.getElementById('excelFileInput');
+  if (inp) {
+    inp.files = dt.files;
+    displayExcelFileInfo(file);
+  }
+}
+
+function displayExcelFileInfo(file) {
+  const promptEl = document.getElementById('excelDropPrompt');
+  const selEl = document.getElementById('excelFileSelectedInfo');
+  const nameEl = document.getElementById('excelFileName');
+  const sizeEl = document.getElementById('excelFileSize');
+  if (!file) {
+    if (promptEl) promptEl.style.display = 'block';
+    if (selEl) selEl.style.display = 'none';
+    return;
+  }
+  if (promptEl) promptEl.style.display = 'none';
+  if (selEl) selEl.style.display = 'flex';
+  if (nameEl) nameEl.textContent = file.name;
+  if (sizeEl) sizeEl.textContent = `${(file.size / 1024).toFixed(1)} KB`;
+}
+
+function clearExcelFileInput() {
+  const inp = document.getElementById('excelFileInput');
+  if (inp) inp.value = '';
+  displayExcelFileInfo(null);
+}
+
 async function importExcelWorkbook() {
   const fileInput = document.getElementById('excelFileInput');
   const file = fileInput && fileInput.files && fileInput.files[0];
@@ -4801,14 +5241,14 @@ async function importExcelWorkbook() {
 
       const counts = data.counts || {};
       showToast(`Excel imported! Roles: ${counts.roles || 0}, Contacts: ${counts.contacts || 0}, Groups: ${counts.groups || 0}`);
-      fileInput.value = '';
+      clearExcelFileInput();
       fetchCachedRoles(true);
     } catch (e) {
       showToast(`Import error: ${e.message}`);
     } finally {
       if (btn) {
         btn.disabled = false;
-        btn.innerHTML = '<svg class="ico-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg><span>Import &amp; Restore Workbook</span>';
+        btn.innerHTML = '<svg class="ico-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg><span>Import &amp; Restore Workbook</span>';
       }
     }
   };
@@ -5479,9 +5919,11 @@ class WebUIServer:
                         role = (qs.get("role", [""])[0] or "").strip()
                         limit = _clamp_int(qs.get("limit", ["50"])[0], 50, 1, 200)
                         offset = _clamp_int(qs.get("offset", ["0"])[0], 0, 0, 50000)
-                        entities, total = parent.db.list_entities_with_roles(
+                        cg_res = parent.db.list_entities_with_roles(
                             is_group=bool(is_group), search=q, role=role, limit=limit, offset=offset
                         )
+                        entities = cg_res.get("items", [])
+                        total = cg_res.get("total", 0)
                         self._send_json({"entities": entities, "total": total})
                         return
 

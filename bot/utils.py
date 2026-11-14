@@ -100,10 +100,13 @@ def clean_recipient_jid(dest: Any) -> Any:
         if hasattr(cleaned, "RawAgent"):
             cleaned.RawAgent = 0
         user = getattr(cleaned, "User", "")
+        if "@" in user:
+            user = user.split("@", 1)[0]
         if ":" in user:
-            cleaned.User = user.split(":", 1)[0]
-        if "." in cleaned.User and getattr(cleaned, "Server", "") != "g.us":
-            cleaned.User = cleaned.User.split(".", 1)[0]
+            user = user.split(":", 1)[0]
+        if "." in user and getattr(cleaned, "Server", "") != "g.us":
+            user = user.split(".", 1)[0]
+        cleaned.User = user
         return cleaned
 
     s = str(dest).strip()
@@ -122,6 +125,8 @@ def clean_recipient_jid(dest: Any) -> Any:
 
     if ":" in s:
         s = s.split(":", 1)[0]
+    if "." in s:
+        s = s.split(".", 1)[0]
     if build_jid is not None:
         return build_jid(s)
     return JID(User=s, Server="s.whatsapp.net", Device=0, RawAgent=0, Integrator=0, IsEmpty=False)

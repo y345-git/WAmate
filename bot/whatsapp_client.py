@@ -461,11 +461,11 @@ class WhatsAppBot:
     def get_self_chat_jid(self) -> Any:
         """Resolve a valid, device-clean recipient JID (Device=0) for sending messages into self-chat."""
         candidates = [
-            getattr(self, "last_self_chat_jid", None),
-            getattr(self, "my_non_ad_jid", None),
-            getattr(self, "my_jid", None),
-            getattr(self, "my_canonical_jid", None),
             f"{self.my_user_number}@s.whatsapp.net" if getattr(self, "my_user_number", "") else None,
+            getattr(self, "my_canonical_jid", None),
+            getattr(self, "my_non_ad_jid", None),
+            getattr(self, "last_self_chat_jid", None),
+            getattr(self, "my_jid", None),
         ]
         for candidate in candidates:
             if candidate:
@@ -996,10 +996,43 @@ class WhatsAppBot:
 
             self.db.backfill_contact_names()
             logger.info("Synchronized %d phone contacts & LID mappings into database.", synced)
+
+            # Also fetch and sync joined WhatsApp groups
+            self.sync_joined_groups()
             return synced
         except Exception as e:
             logger.exception("Error syncing address book contacts from whatsmeow session: %s", e)
             return 0
+
+    def sync_joined_groups(self) -> int:
+        """Fetch all groups joined by this account via neonize client and ensure they exist in contacts."""
+        try:
+            if not getattr(self, "client", None) or not hasattr(self.client, "get_joined_groups"):
+                return 0
+            groups = self.client.get_joined_groups()
+            if not groups:
+                return 0
+            to_upsert = []
+            for g in groups:
+                g_jid = jid_to_str(getattr(g, "JID", None))
+                g_name = ""
+                if hasattr(g, "GroupName") and getattr(g.GroupName, "Name", None):
+                    g_name = g.GroupName.Name
+                elif getattr(g, "Name", None):
+                    g_name = g.Name
+                if g_jid:
+                    to_upsert.append({
+                        "jid": g_jid,
+                        "name": g_name or None,
+                        "is_group": True,
+                    })
+            if to_upsert:
+                self.db.upsert_contacts_batch(to_upsert)
+                logger.info("Synchronized %d joined WhatsApp groups into database.", len(to_upsert))
+                return len(to_upsert)
+        except Exception as exc:
+            logger.debug("sync_joined_groups notice: %s", exc)
+        return 0
 
     def download_media_by_id(self, msg_id: str) -> tuple[str | None, str | None, str | None, str | None]:
         """Download media file for a given message ID from WhatsApp or return cached file.

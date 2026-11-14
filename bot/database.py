@@ -372,22 +372,80 @@ class DatabaseManager:
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_camp_hist_started ON campaign_history(started_at DESC);")
 
-            # Seed initial default roles if none exist
+            # Seed initial default roles if none exist, or enrich missing role colors
             try:
+                DEFAULT_ROLE_PALETTE = {
+                    "VIP": "#f59e0b",
+                    "Clients": "#38bdf8",
+                    "Business": "#6366f1",
+                    "Friends": "#ec4899",
+                    "Family": "#10b981",
+                    "Nature": "#84cc16",
+                }
                 existing_roles_cnt = conn.execute("SELECT COUNT(*) FROM roles").fetchone()[0]
+                init_ts = int(time.time())
                 if existing_roles_cnt == 0:
-                    init_ts = int(time.time())
-                    for def_role in ("Friends", "Business", "Nature", "Family", "Clients", "VIP"):
-                        conn.execute("INSERT OR IGNORE INTO roles (name, color, created_at) VALUES (?, '', ?)", (def_role, init_ts))
+                    for def_role, def_color in DEFAULT_ROLE_PALETTE.items():
+                        conn.execute(
+                            "INSERT OR IGNORE INTO roles (name, color, created_at) VALUES (?, ?, ?)",
+                            (def_role, def_color, init_ts),
+                        )
+                else:
+                    for def_role, def_color in DEFAULT_ROLE_PALETTE.items():
+                        conn.execute(
+                            "UPDATE roles SET color = ? WHERE name = ? AND (color IS NULL OR color = '')",
+                            (def_color, def_role),
+                        )
             except Exception as re_err:
                 logger.debug("Default roles seed skipped: %s", re_err)
 
             conn.commit()
             logger.info("Database initialized successfully at %s", self.db_path)
 
+        # Backfill any groups or contacts present in messages table into contacts table
+        self.backfill_contacts_and_groups_from_messages()
+
         downloads_dir = Path(self.db_path).parent / "downloads"
         if downloads_dir.exists():
             self.reconcile_stored_downloads(downloads_dir)
+
+    def backfill_contacts_and_groups_from_messages(self) -> None:
+        """Ensure all group and contact JIDs in messages table exist in contacts table."""
+        try:
+            with self._get_connection() as conn:
+                # Backfill WhatsApp groups
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO contacts (jid, name, is_group, updated_at)
+                    SELECT chat_jid,
+                           COALESCE(NULLIF(chat_name, ''), chat_jid),
+                           1,
+                           strftime('%s', 'now')
+                    FROM messages
+                    WHERE (is_group = 1 OR chat_jid LIKE '%@g.us')
+                      AND chat_jid != 'status@broadcast'
+                    GROUP BY chat_jid
+                    """
+                )
+                # Backfill 1-on-1 contact chats
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO contacts (jid, name, phone_number, is_group, updated_at)
+                    SELECT chat_jid,
+                           COALESCE(NULLIF(chat_name, ''), chat_jid),
+                           REPLACE(REPLACE(chat_jid, '@s.whatsapp.net', ''), '@c.us', ''),
+                           0,
+                           strftime('%s', 'now')
+                    FROM messages
+                    WHERE is_group = 0
+                      AND chat_jid LIKE '%@s.whatsapp.net'
+                      AND chat_jid != 'status@broadcast'
+                    GROUP BY chat_jid
+                    """
+                )
+                conn.commit()
+        except Exception as exc:
+            logger.debug("backfill_contacts_and_groups_from_messages error: %s", exc)
 
     def reconcile_stored_downloads(self, downloads_dir: Path) -> int:
         """Scan downloads_dir and record local_path for any previously downloaded files,
@@ -2879,7 +2937,7 @@ class DatabaseManager:
         with self._get_connection() as conn:
             rows = conn.execute(
                 """
-                SELECT r.name, r.color, r.created_at, COUNT(er.jid) as count
+                SELECT r.name, r.color, r.created_at, COUNT(DISTINCT er.jid) as count
                 FROM roles r
                 LEFT JOIN entity_roles er ON r.name = er.role
                 GROUP BY r.name
@@ -2892,6 +2950,7 @@ class DatabaseManager:
                     "color": r["color"] or "",
                     "created_at": int(r["created_at"] or 0),
                     "count": int(r["count"] or 0),
+                    "assigned_count": int(r["count"] or 0),
                 }
                 for r in rows
             ]
@@ -3080,41 +3139,44 @@ class DatabaseManager:
         roles: list[str],
         target_audience: str = "both",
     ) -> list[dict[str, Any]]:
-        """Resolve all distinct contacts/groups matching any of the specified roles and target audience."""
+        """Resolve all distinct contacts/groups matching any of the specified roles and target audience.
+        If roles list is empty, targets all recipients matching target_audience without role restriction.
+        """
         clean_roles = [r.strip() for r in roles if r and r.strip()]
-        if not clean_roles:
-            return []
-
-        placeholders = ",".join("?" for _ in clean_roles)
         audience = (target_audience or "both").lower()
 
-        where_extra = ""
-        extra_params: list[Any] = []
+        where_clauses = ["c.jid != 'status@broadcast'"]
+        params: list[Any] = []
+
         if audience == "contacts":
-            where_extra = "AND c.is_group = 0"
+            where_clauses.append("c.is_group = 0")
         elif audience == "groups":
-            where_extra = "AND c.is_group = 1"
+            where_clauses.append("c.is_group = 1")
+
+        if clean_roles:
+            placeholders = ",".join("?" for _ in clean_roles)
+            where_clauses.append(f"c.jid IN (SELECT jid FROM entity_roles WHERE role IN ({placeholders}))")
+            params.extend(clean_roles)
+
+        where_sql = " WHERE " + " AND ".join(where_clauses)
 
         query = f"""
             SELECT c.jid, c.name, c.push_name, c.phone_number, c.is_group,
-                   GROUP_CONCAT(DISTINCT er.role) as roles
+                   (SELECT GROUP_CONCAT(DISTINCT er.role) FROM entity_roles er WHERE er.jid = c.jid) as roles
             FROM contacts c
-            JOIN entity_roles er ON c.jid = er.jid
-            WHERE c.jid != 'status@broadcast'
-              AND er.role IN ({placeholders})
-              {where_extra}
-            GROUP BY c.jid
+            {where_sql}
             ORDER BY COALESCE(NULLIF(c.name, ''), NULLIF(c.push_name, ''), c.phone_number, c.jid) COLLATE NOCASE ASC
         """
 
         with self._get_connection() as conn:
-            rows = conn.execute(query, tuple(clean_roles + extra_params)).fetchall()
+            rows = conn.execute(query, tuple(params)).fetchall()
             out = []
             for r in rows:
                 roles_arr = [x.strip() for x in (r["roles"] or "").split(",") if x.strip()]
+                name = r["name"] or r["push_name"] or r["phone_number"] or r["jid"]
                 out.append({
                     "jid": r["jid"],
-                    "name": r["name"] or r["push_name"] or r["phone_number"] or r["jid"],
+                    "name": name,
                     "phone": r["phone_number"] or "",
                     "is_group": bool(r["is_group"]),
                     "roles": roles_arr,

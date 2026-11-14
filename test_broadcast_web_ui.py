@@ -90,6 +90,8 @@ def test_all():
     roles = db.get_roles()
     role_names = [r["name"] for r in roles]
     assert "VIP" in role_names and "Clients" in role_names
+    for r in roles:
+        assert "count" in r and "assigned_count" in r, "Roles must return count and assigned_count"
 
     c1 = "919000000001@s.whatsapp.net"
     c2 = "919000000002@s.whatsapp.net"
@@ -109,6 +111,19 @@ def test_all():
     assert len(vip_contacts) == 1 and vip_contacts[0]["jid"] == c1
     vip_groups = db.lookup_recipients_by_roles(["VIP"], target_audience="groups")
     assert len(vip_groups) == 1 and vip_groups[0]["jid"] == g1
+
+    # Verify lookup with NO roles selected returns all in audience (Fix for user issue)
+    all_both = db.lookup_recipients_by_roles([], target_audience="both")
+    assert len(all_both) >= 3, f"Expected at least 3 recipients for audience=both with no roles, got {len(all_both)}"
+    all_contacts = db.lookup_recipients_by_roles([], target_audience="contacts")
+    assert len(all_contacts) >= 2, f"Expected at least 2 contacts for audience=contacts, got {len(all_contacts)}"
+    all_groups = db.lookup_recipients_by_roles([], target_audience="groups")
+    assert len(all_groups) >= 1, f"Expected at least 1 group for audience=groups, got {len(all_groups)}"
+
+    # Verify list_entities_with_roles returns dictionary structure
+    list_res = db.list_entities_with_roles(is_group=True)
+    assert isinstance(list_res, dict) and "items" in list_res and "total" in list_res
+    assert list_res["total"] >= 1
     print("   [OK] Role assignment and audience filtering work accurately.")
 
     # 3. Test Broadcast sending
