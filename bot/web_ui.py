@@ -2497,7 +2497,7 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
     width: 90%;
   }
   .bcast-modal-lg {
-    max-width: 760px;
+    max-width: 860px;
   }
   .bcast-modal-body {
     padding: 18px 20px;
@@ -2527,7 +2527,77 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
     font-size: 12px;
   }
   .bcast-logs-container {
-    max-height: 440px;
+    max-height: 520px;
+    overflow-y: auto;
+  }
+
+  /* In-depth Campaign History KPI & Detail Cards */
+  .bcast-history-kpi-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+    gap: 10px;
+    margin-bottom: 12px;
+  }
+  .bcast-kpi-card {
+    background: #091219;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .bcast-kpi-lbl {
+    font-size: 10px;
+    font-weight: 700;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .bcast-kpi-val {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text);
+    word-break: break-word;
+  }
+  .bcast-kpi-val.accent-val { color: var(--accent); }
+  .bcast-kpi-val.success-val { color: #00c896; }
+  .bcast-kpi-val.warn-val { color: #f59e0b; }
+  .bcast-kpi-val.fail-val { color: #f45b69; }
+  .bcast-kpi-sub {
+    font-size: 11px;
+    color: var(--muted);
+  }
+  .bcast-history-meta-box {
+    background: #091219;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px 14px;
+    margin-bottom: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .bcast-history-meta-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px;
+    font-size: 12px;
+    color: var(--muted);
+  }
+  .bcast-history-msg-pre {
+    margin: 0;
+    padding: 10px 12px;
+    background: rgba(0, 0, 0, 0.4);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 8px;
+    font-family: inherit;
+    font-size: 12px;
+    color: var(--text);
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 140px;
     overflow-y: auto;
   }
 
@@ -3231,6 +3301,7 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
         <div class="bcast-card">
           <div class="bcast-card-hdr">
             <h3 class="bcast-title">Schedule a Future Campaign</h3>
+            <span id="schedTargetBadge" class="badge-status badge-processing">Targeting 0</span>
           </div>
           <div class="bcast-field">
             <label class="bcast-label">Send Date &amp; Time (Local Time)</label>
@@ -3285,6 +3356,13 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
               <div id="schedSpecificDropdown" class="bcast-ac-dropdown" style="display:none"></div>
             </div>
             <div id="schedSpecificChips" class="bcast-chips-container"></div>
+          </div>
+          <div id="schedPreviewContainer" class="bcast-preview-box">
+            <div class="bcast-preview-hdr">
+              <span id="schedPreviewSummary">Loading recipients preview...</span>
+              <button type="button" class="text-link" onclick="toggleRecipientChips('schedPreviewList')">Show / Hide List</button>
+            </div>
+            <div id="schedPreviewList" class="bcast-preview-list" style="display:none"></div>
           </div>
           <div class="bcast-field">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
@@ -3513,10 +3591,13 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
 
 <dialog id="campaignLogsModal" class="bcast-modal bcast-modal-lg">
   <div class="modal-hdr">
-    <strong id="campaignLogsModalTitle">Campaign Execution Logs</strong>
+    <div style="display:flex;align-items:center;gap:10px;">
+      <strong id="campaignLogsModalTitle" style="font-size:15px;">Campaign Execution Details</strong>
+      <span id="campaignLogsModalTypeBadge" class="stat-pill" style="font-size:11px;display:none;"></span>
+    </div>
     <button class="ghost-btn" onclick="document.getElementById('campaignLogsModal').close()">✕</button>
   </div>
-  <div class="modal-body">
+  <div class="modal-body bcast-modal-body">
     <div id="campaignLogsModalContent" class="bcast-logs-container"></div>
   </div>
 </dialog>
@@ -5066,7 +5147,9 @@ function updatePersonalizationPreview(textareaId, previewId) {
   if (/\{name\}|\{first_name\}|\{phone\}/i.test(val)) {
     let sampleName = 'Alex Smith';
     let samplePhone = '+91 98000 00000';
-    const recs = window._currentSendRecipients || [];
+    const recs = (textareaId === 'schedMessageText')
+      ? (window._currentSchedRecipients || [])
+      : (window._currentSendRecipients || []);
     if (recs.length > 0) {
       const rec = recs[0];
       sampleName = rec.name || rec.push_name || rec.phone || sampleName;
@@ -5717,10 +5800,58 @@ function initScheduleTab() {
     setupSpecificAutocomplete('schedSpecificInput', 'schedSpecificDropdown', 'schedSpecificChips', '_schedSpecificRecipients', updateSchedPreview);
     loadScheduledQueue();
     applySchedulePreset(60, false);
+    updateSchedPreview();
   });
 }
 
-function updateSchedPreview() {}
+async function updateSchedPreview() {
+  const audEl = document.querySelector('input[name="schedAudience"]:checked');
+  const audience = audEl ? audEl.value : 'both';
+  const roles = getSelectedRoles('schedRolePills');
+  try {
+    const res = await fetch(`/api/campaigns/preview?roles=${encodeURIComponent(roles.join(','))}&audience=${encodeURIComponent(audience)}`);
+    const data = await res.json();
+    let recipients = Array.isArray(data.recipients) ? [...data.recipients] : [];
+    
+    // Merge specific recipients without duplicates
+    const seen = new Set(recipients.map(r => r.jid));
+    (window._schedSpecificRecipients || []).forEach(s => {
+      if (!seen.has(s.jid)) {
+        recipients.push({ jid: s.jid, name: s.name, phone: s.phone, is_group: (s.jid || '').includes('@g.us') });
+        seen.add(s.jid);
+      }
+    });
+
+    window._currentSchedRecipients = recipients;
+    updatePersonalizationPreview('schedMessageText', 'schedMessagePersonalizedPreview');
+
+    const total = recipients.length;
+    const contactsCount = recipients.filter(r => !r.is_group).length;
+    const groupsCount = recipients.filter(r => r.is_group).length;
+
+    const badge = document.getElementById('schedTargetBadge');
+    if (badge) {
+      badge.textContent = `Targeting ${total}`;
+      badge.className = `badge-status ${total > 0 ? 'badge-sent' : 'badge-pending'}`;
+    }
+
+    const summary = document.getElementById('schedPreviewSummary');
+    if (summary) {
+      summary.textContent = `${total} recipient(s) selected (${contactsCount} contacts, ${groupsCount} groups)`;
+    }
+
+    const list = document.getElementById('schedPreviewList');
+    if (list) {
+      list.innerHTML = recipients.map(r => `
+        <span class="stat-pill" style="font-size:11px;" title="${esc(r.jid)}">
+          ${r.is_group ? '👥' : '👤'} ${esc(r.name || r.phone || r.jid)}
+        </span>
+      `).join('');
+    }
+  } catch (e) {
+    console.error('Failed to update scheduled recipient preview:', e);
+  }
+}
 
 async function submitScheduleCampaign() {
   const timeInput = document.getElementById('schedTimeInput');
@@ -5764,7 +5895,8 @@ async function submitScheduleCampaign() {
     if (msgInput) msgInput.value = '';
     clearFileAttachment('schedFileInput', 'schedFilePreview', '_schedAttachData');
     window._schedSpecificRecipients = [];
-    renderSpecificChips('schedSpecificChips', '_schedSpecificRecipients', null);
+    renderSpecificChips('schedSpecificChips', '_schedSpecificRecipients', updateSchedPreview);
+    updateSchedPreview();
     loadScheduledQueue();
   } catch (e) {
     showToast(`Scheduling failed: ${e.message}`);
@@ -6287,6 +6419,46 @@ async function deleteRole(roleName) {
   }
 }
 
+// Campaign History formatting helpers
+function formatEpochDateTime(ts) {
+  if (!ts) return '—';
+  try {
+    const d = new Date(ts * 1000);
+    return d.toLocaleString([], {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
+  } catch (_) {
+    return String(ts);
+  }
+}
+
+function formatEpochTimeOnly(ts) {
+  if (!ts) return '—';
+  try {
+    const d = new Date(ts * 1000);
+    return d.toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
+  } catch (_) {
+    return String(ts);
+  }
+}
+
+function formatDurationSeconds(sec) {
+  if (sec == null || isNaN(sec) || sec <= 0) return '0.0s';
+  if (sec < 60) return `${Number(sec).toFixed(1)}s`;
+  const m = Math.floor(sec / 60);
+  const s = (sec % 60).toFixed(1);
+  return `${m}m ${s}s`;
+}
+
 // Campaign History
 async function loadCampaignHistory(page = 0) {
   window._historyPage = page;
@@ -6301,6 +6473,7 @@ async function loadCampaignHistory(page = 0) {
     const data = await res.json();
     const items = data.history || [];
     const total = data.total ?? items.length;
+    window._campaignHistoryItems = items;
 
     if (!items.length) {
       container.innerHTML = '<div class="bcast-empty" style="padding:28px;text-align:center;color:var(--muted)">No campaign history recorded yet.</div>';
@@ -6312,32 +6485,70 @@ async function loadCampaignHistory(page = 0) {
       <table class="bcast-table">
         <thead>
           <tr>
-            <th>Date &amp; Time</th>
-            <th>Type</th>
+            <th>Timeline (Started &amp; Ended)</th>
+            <th>Type &amp; Status</th>
             <th>Audience / Roles</th>
-            <th>Message</th>
-            <th>Targets</th>
+            <th>Message &amp; Attachment</th>
+            <th>Delivery Results</th>
             <th>Duration</th>
             <th>Actions</th>
           </tr>
         </thead>
         <tbody>
-          ${items.map(h => {
-            const dateStr = h.started_at ? new Date(h.started_at * 1000).toLocaleString() : '—';
-            const rolesStr = (h.roles || []).join(', ') || 'All';
-            const msgSnippet = esc((h.message || '').slice(0, 48)) || '(attachment only)';
-            const targetsBadge = `<span class="badge-status badge-sent">${h.sent_count || 0} sent</span> ${h.failed_count > 0 ? `<span class="badge-status badge-failed">${h.failed_count} failed</span>` : ''}`;
+          ${items.map((h, idx) => {
+            const startStr = formatEpochDateTime(h.started_at);
+            const endStr = h.finished_at ? formatEpochTimeOnly(h.finished_at) : '—';
+            const rolesStr = (h.roles || []).join(', ') || 'All Roles';
+            const msgSnippet = esc((h.message || '').slice(0, 52)) || '(attachment only)';
+            const totalRec = h.recipients_count || 0;
+            const sentRec = h.sent_count || 0;
+            const failedRec = h.failed_count || 0;
+            const successPct = totalRec > 0 ? Math.round((sentRec / totalRec) * 100) : 0;
+            const durStr = formatDurationSeconds(h.duration_sec);
+            const avgPacing = totalRec > 0 ? `~${(h.duration_sec / totalRec).toFixed(1)}s/rec` : '';
+
+            let statusBadge = '<span class="badge-status badge-sent">COMPLETED</span>';
+            if (failedRec > 0 && sentRec > 0) {
+              statusBadge = '<span class="badge-status badge-pending">PARTIAL</span>';
+            } else if (sentRec === 0 && (failedRec > 0 || totalRec > 0)) {
+              statusBadge = '<span class="badge-status badge-failed">FAILED</span>';
+            } else if (totalRec === 0) {
+              statusBadge = '<span class="badge-status badge-cancelled">EMPTY</span>';
+            }
 
             return `
               <tr>
-                <td style="white-space:nowrap;font-weight:600;">${esc(dateStr)}</td>
-                <td><span class="stat-pill" style="font-size:11px;">${esc(h.campaign_type || 'Broadcast')}</span></td>
-                <td>${esc(h.target_audience || 'both')} <span style="font-size:11px;color:var(--muted)">(${esc(rolesStr)})</span></td>
-                <td>${msgSnippet}</td>
-                <td>${targetsBadge}</td>
-                <td style="font-size:12px;color:var(--muted);">${(h.duration_sec || 0).toFixed(1)}s</td>
                 <td>
-                  <button type="button" class="primary-btn-sm" onclick="viewCampaignLogs(${escArg(JSON.stringify(h.logs || []))}, ${escArg(dateStr)})">View Logs</button>
+                  <div style="font-weight:600;font-size:12px;color:var(--text);white-space:nowrap;">${esc(startStr)}</div>
+                  <div style="font-size:11px;color:var(--muted);margin-top:2px;">Ended: ${esc(endStr)}</div>
+                </td>
+                <td>
+                  <div style="display:flex;flex-direction:column;gap:4px;align-items:flex-start;">
+                    <span class="stat-pill" style="font-size:10px;">${esc(h.campaign_type || 'Broadcast')}</span>
+                    ${statusBadge}
+                  </div>
+                </td>
+                <td>
+                  <div style="font-weight:600;text-transform:capitalize;font-size:12px;">${esc(h.target_audience || 'both')}</div>
+                  <div style="font-size:11px;color:var(--muted);margin-top:2px;">Roles: ${esc(rolesStr)}</div>
+                </td>
+                <td>
+                  <div style="max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;" title="${esc(h.message || '')}">
+                    ${msgSnippet}
+                  </div>
+                  ${h.attachment_name ? `<div style="font-size:11px;color:var(--accent);margin-top:2px;">📎 ${esc(h.attachment_name)}</div>` : ''}
+                </td>
+                <td>
+                  <div style="font-weight:700;color:var(--accent);font-size:12px;">${sentRec} / ${totalRec} Sent</div>
+                  <div style="font-size:11px;color:var(--muted);">${successPct}% success</div>
+                  ${failedRec > 0 ? `<div style="font-size:10px;color:var(--danger);font-weight:600;">${failedRec} failed</div>` : ''}
+                </td>
+                <td>
+                  <div style="font-weight:600;font-size:12px;color:var(--text);">${esc(durStr)}</div>
+                  ${avgPacing ? `<div style="font-size:10px;color:var(--muted);">${avgPacing}</div>` : ''}
+                </td>
+                <td>
+                  <button type="button" class="primary-btn-sm" onclick="viewCampaignDetails(${idx})">View Details</button>
                 </td>
               </tr>
             `;
@@ -6353,7 +6564,7 @@ async function loadCampaignHistory(page = 0) {
       } else {
         pagination.innerHTML = `
           <button type="button" class="ghost-btn-sm" ${page === 0 ? 'disabled' : ''} onclick="loadCampaignHistory(${page - 1})">Prev</button>
-          <span style="font-size:12px;color:var(--muted)">Page ${page + 1}</span>
+          <span style="font-size:12px;color:var(--muted)">Page ${page + 1} of ${maxPages}</span>
           <button type="button" class="ghost-btn-sm" ${items.length < BCAST_PAGE_SIZE ? 'disabled' : ''} onclick="loadCampaignHistory(${page + 1})">Next</button>
         `;
       }
@@ -6363,46 +6574,164 @@ async function loadCampaignHistory(page = 0) {
   }
 }
 
-function viewCampaignLogs(logsJson, dateStr) {
+function viewCampaignDetails(idx) {
   const dlg = document.getElementById('campaignLogsModal');
   const title = document.getElementById('campaignLogsModalTitle');
+  const typeBadge = document.getElementById('campaignLogsModalTypeBadge');
   const content = document.getElementById('campaignLogsModalContent');
   if (!dlg || !content) return;
 
-  const logs = typeof logsJson === 'string' ? JSON.parse(logsJson) : (logsJson || []);
-  if (title) title.textContent = `Campaign Delivery Logs — ${dateStr}`;
+  const item = (window._campaignHistoryItems && window._campaignHistoryItems[idx]) || null;
+  if (!item) return;
 
-  if (!logs.length) {
-    content.innerHTML = '<div style="padding:20px;text-align:center;color:var(--muted)">No per-recipient log entries recorded for this campaign.</div>';
-  } else {
-    content.innerHTML = `
-      <table class="bcast-table">
-        <thead>
-          <tr>
-            <th>Recipient</th>
-            <th>JID / Phone</th>
-            <th>Status</th>
-            <th>Error Detail</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${logs.map(log => {
-            const isOk = (log.status === 'sent');
-            const stBadge = isOk ? '<span class="badge-status badge-sent">SENT</span>' : '<span class="badge-status badge-failed">FAILED</span>';
-            return `
-              <tr>
-                <td><strong>${esc(log.name || 'Unknown')}</strong></td>
-                <td><code>${esc(log.phone || log.jid || '')}</code></td>
-                <td>${stBadge}</td>
-                <td style="color:${isOk ? 'var(--muted)' : 'var(--danger)'};font-size:12px;">${esc(log.error || 'Delivered')}</td>
-              </tr>
-            `;
-          }).join('')}
-        </tbody>
-      </table>
-    `;
+  const startStr = formatEpochDateTime(item.started_at);
+  const endStr = formatEpochDateTime(item.finished_at);
+  const durationStr = formatDurationSeconds(item.duration_sec);
+  const total = item.recipients_count || 0;
+  const sent = item.sent_count || 0;
+  const failed = item.failed_count || 0;
+  const successPct = total > 0 ? Math.round((sent / total) * 100) : 0;
+  const avgPacing = total > 0 ? `${(item.duration_sec / total).toFixed(1)}s / recipient` : '—';
+  const rolesStr = (item.roles || []).join(', ') || 'All Roles';
+  const logs = item.logs || [];
+
+  if (title) title.textContent = `Campaign Execution Details`;
+  if (typeBadge) {
+    typeBadge.textContent = item.campaign_type || 'Broadcast';
+    typeBadge.style.display = 'inline-block';
   }
+
+  window._activeDetailLogs = logs;
+
+  content.innerHTML = `
+    <!-- KPI Summary Grid -->
+    <div class="bcast-history-kpi-grid">
+      <div class="bcast-kpi-card">
+        <span class="bcast-kpi-lbl">Start Time</span>
+        <span class="bcast-kpi-val" style="font-size:12px;">${esc(startStr)}</span>
+        <span class="bcast-kpi-sub">Epoch: ${item.started_at || '—'}</span>
+      </div>
+      <div class="bcast-kpi-card">
+        <span class="bcast-kpi-lbl">End Time</span>
+        <span class="bcast-kpi-val" style="font-size:12px;">${esc(endStr)}</span>
+        <span class="bcast-kpi-sub">${item.finished_at ? 'Execution Completed' : 'Status Finalized'}</span>
+      </div>
+      <div class="bcast-kpi-card">
+        <span class="bcast-kpi-lbl">Total Duration</span>
+        <span class="bcast-kpi-val accent-val">${esc(durationStr)}</span>
+        <span class="bcast-kpi-sub">Avg Pacing: ${esc(avgPacing)}</span>
+      </div>
+      <div class="bcast-kpi-card">
+        <span class="bcast-kpi-lbl">Delivery Success</span>
+        <span class="bcast-kpi-val ${failed === 0 ? 'success-val' : 'warn-val'}">${successPct}% (${sent}/${total})</span>
+        <span class="bcast-kpi-sub">${failed > 0 ? `${failed} delivery failure(s)` : 'All targets delivered'}</span>
+      </div>
+    </div>
+
+    <!-- Campaign Overview Metadata -->
+    <div class="bcast-history-meta-box">
+      <div class="bcast-history-meta-row">
+        <div><strong>Type:</strong> <span class="stat-pill" style="font-size:10px;">${esc(item.campaign_type || 'Broadcast')}</span></div>
+        <div><strong>Audience Scope:</strong> <span style="text-transform:capitalize;color:var(--text);font-weight:600;">${esc(item.target_audience || 'both')}</span></div>
+        <div><strong>Target Roles:</strong> <span style="color:var(--text);">${esc(rolesStr)}</span></div>
+        ${item.attachment_name ? `<div><strong>Attachment:</strong> <span class="stat-pill" style="font-size:11px;">📎 ${esc(item.attachment_name)}</span></div>` : ''}
+      </div>
+      <div>
+        <div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;margin-bottom:4px;">Dispatched Message Content:</div>
+        <pre class="bcast-history-msg-pre">${esc(item.message || '(Attachment only broadcast)')}</pre>
+      </div>
+    </div>
+
+    <!-- Per-recipient audit log table -->
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:12px;">
+      <h4 style="margin:0;font-size:13px;font-weight:700;color:var(--text);">Recipient Delivery Audit Feed (${logs.length})</h4>
+      <input id="historyLogSearch" type="search" class="bcast-input" style="max-width:240px;padding:4px 8px;font-size:12px;" placeholder="Filter recipients..." oninput="filterHistoryAuditLogs()"/>
+    </div>
+    <div id="historyAuditLogsContainer" style="overflow-x:auto;">
+      ${renderHistoryAuditTable(logs)}
+    </div>
+  `;
+
   dlg.showModal();
+}
+
+function renderHistoryAuditTable(logs) {
+  if (!logs || !logs.length) {
+    return '<div style="padding:20px;text-align:center;color:var(--muted);font-size:12px;">No per-recipient log entries recorded for this campaign.</div>';
+  }
+  return `
+    <table class="bcast-table">
+      <thead>
+        <tr>
+          <th>Recipient</th>
+          <th>Phone / JID</th>
+          <th>Delivered Time</th>
+          <th>Status</th>
+          <th>Delivery Diagnostics</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${logs.map(log => {
+          const isOk = (log.status === 'sent');
+          const isCancelled = (log.status === 'cancelled');
+          let stBadge = '<span class="badge-status badge-sent">SENT</span>';
+          if (!isOk) {
+            stBadge = isCancelled
+              ? '<span class="badge-status badge-cancelled">CANCELLED</span>'
+              : '<span class="badge-status badge-failed">FAILED</span>';
+          }
+          const timeStr = log.timestamp ? formatEpochTimeOnly(log.timestamp) : '—';
+          return `
+            <tr>
+              <td><strong>${esc(log.name || 'Unknown')}</strong></td>
+              <td><code>${esc(log.phone || log.jid || '')}</code></td>
+              <td style="font-size:11px;color:var(--muted);white-space:nowrap;">${esc(timeStr)}</td>
+              <td>${stBadge}</td>
+              <td style="color:${isOk ? 'var(--muted)' : 'var(--danger)'};font-size:12px;">${esc(log.error || 'Delivered successfully')}</td>
+            </tr>
+          `;
+        }).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
+function filterHistoryAuditLogs() {
+  const q = (document.getElementById('historyLogSearch')?.value || '').toLowerCase().trim();
+  const logs = window._activeDetailLogs || [];
+  const container = document.getElementById('historyAuditLogsContainer');
+  if (!container) return;
+  if (!q) {
+    container.innerHTML = renderHistoryAuditTable(logs);
+    return;
+  }
+  const filtered = logs.filter(l => 
+    (l.name && l.name.toLowerCase().includes(q)) ||
+    (l.phone && l.phone.toLowerCase().includes(q)) ||
+    (l.jid && l.jid.toLowerCase().includes(q)) ||
+    (l.error && l.error.toLowerCase().includes(q))
+  );
+  container.innerHTML = renderHistoryAuditTable(filtered);
+}
+
+function viewCampaignLogs(logsJson, dateStr) {
+  const logs = typeof logsJson === 'string' ? JSON.parse(logsJson) : (logsJson || []);
+  const dummyItem = {
+    started_at: 0,
+    finished_at: 0,
+    duration_sec: 0,
+    recipients_count: logs.length,
+    sent_count: logs.filter(l => l.status === 'sent').length,
+    failed_count: logs.filter(l => l.status !== 'sent').length,
+    campaign_type: 'Broadcast',
+    target_audience: 'both',
+    roles: [],
+    message: '',
+    attachment_name: '',
+    logs: logs,
+  };
+  window._campaignHistoryItems = [dummyItem];
+  viewCampaignDetails(0);
 }
 
 // Excel Dropzone & Import

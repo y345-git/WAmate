@@ -82,9 +82,10 @@ Launch WAmate (or run standalone via `python3 main.py --web-only`) and visit **`
 
 - **Search & Media Vault** — Tokenized FTS5 + OCR search across messages and phone numbers (`@lid` resolved), date filters (`Today`, `7d`, `30d`), video thumbnails, and PDF/doc previews.
 - **Anti-Delete Vault** — Real-time log of deleted and edited messages (status broadcasts filtered out).
-- **Broadcast & Campaign Manager** — Filter audience by scope (*All, Contacts Only, Groups Only*) and custom tags. Supports `{name}` personalization, file attachments, and safe delivery pacing (1.0s – 2.5s jitter).
-- **Live Delivery Modal** — Real-time progress bar with per-recipient status feed (timestamp, success checkmarks, and failure details).
-- **Scheduled Dispatcher** — Schedule campaigns for any future date/time with automatic background dispatching.
+- **Broadcast & Campaign Manager** — Target audience by scope (*All, Contacts Only, Groups Only*) and custom roles with instant live recipient previews and targeting counter badge. Supports `{name}`, `{first_name}`, and `{phone}` personalization, media attachments, and anti-spam delivery pacing (1.0s – 2.5s randomized jitter).
+- **Live Delivery Modal & Background Tracking** — Real-time progress bar with per-recipient status feed, floating bottom capsule indicator for dismissible background broadcasts, and page reload resilience.
+- **Scheduled Campaign Dispatcher** — Schedule campaigns with a custom calendar & time picker, quick presets (`+30m`, `+1h`, `+3h`, `Tonight`, `Tomorrow`), live recipient preview list, and manageable queue with instant "Send Now" trigger.
+- **In-Depth Campaign History & Audit** — Comprehensive execution logs showing start and end timestamps, total duration, delivery pacing rate, success rates, full message payload, and searchable per-recipient audit feed.
 - **Excel Backup & Restore** — Export and import your entire address book, groups, and color-coded role tags using formatted `.xlsx` workbooks (Merge or Replace modes).
 - **One-Click Actions** — Click **Ask AI** on any bubble or card to query Gemini, or **Send to WA** to push items straight into your WhatsApp self-chat.
 

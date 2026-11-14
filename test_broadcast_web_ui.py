@@ -248,6 +248,25 @@ def test_all():
     assert sent_in_db[0]["is_from_me"] == 1
     print("   [OK] Saved contacts filtering, message persistence, and live progress state verified.")
 
+    # 7. Test In-depth Campaign History and Preview
+    print("\n7. Testing In-depth Campaign History details and Audience Preview...")
+    hist = db.get_campaign_history()
+    assert hist["total"] > 0, "History records should exist"
+    first_hist = hist["items"][0]
+    assert "started_at" in first_hist and first_hist["started_at"] > 0, "started_at must be populated"
+    assert "finished_at" in first_hist and first_hist["finished_at"] >= first_hist["started_at"], "finished_at must be >= started_at"
+    assert "duration_sec" in first_hist and first_hist["duration_sec"] >= 0, "duration_sec must be non-negative"
+    assert "logs" in first_hist and isinstance(first_hist["logs"], list), "logs must be a list"
+    assert len(first_hist["logs"]) > 0, "logs should contain per-recipient records"
+    log_entry = first_hist["logs"][0]
+    assert "status" in log_entry and "jid" in log_entry, "log entry must have status and jid"
+    print("   [OK] In-depth campaign history (started_at, finished_at, duration_sec, logs) verified.")
+
+    # Test audience preview query
+    vip_preview = db.lookup_recipients_by_roles(roles=["VIP"], target_audience="both")
+    assert any(r["jid"] == c1 for r in vip_preview), "Alice (VIP) must be in preview"
+    print("   [OK] Broadcast recipients preview query accurately resolves targeted entities.")
+
     # Clean up test database
     if db_path.exists():
         db_path.unlink()
