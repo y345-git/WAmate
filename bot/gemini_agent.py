@@ -645,3 +645,169 @@ class GeminiAgent:
 
         logger.exception("Error during Gemini generation: %s", last_error)
         return f"⚠️ *Error processing request:*\n`{str(last_error)}`"
+
+    def generate_morning_digest(self, digest_data: dict[str, Any]) -> str:
+        """Synthesize a structured WhatsApp Morning Executive Digest from the last 24h activity.
+        Uses exactly ONE Gemini API call to strictly preserve rate limits and daily quota.
+        """
+        total_msgs = digest_data.get("total_messages", 0)
+        direct_chats = digest_data.get("direct_chats", {})
+        mentions = digest_data.get("mentions", [])
+        active_groups = digest_data.get("active_groups", [])
+
+        if total_msgs == 0 and not active_groups:
+            return (
+                "🌅 *WAmate Morning Executive Digest*\n\n"
+                "☀️ Good morning! You have no unread direct messages, mentions, or active group updates "
+                f"in the last {digest_data.get('window_hours', 24)} hours. Your inbox is clean and up to date! 🚀"
+            )
+
+        # Build clean raw text representation of recent messages
+        lines = []
+        if mentions:
+            lines.append("--- GROUP MENTIONS & URGENT CALLOUTS ---")
+            for m in mentions:
+                lines.append(f"[{m.get('time')}] in {m.get('chat')} from {m.get('sender')}: {m.get('text')}")
+
+        if direct_chats:
+            lines.append("\n--- DIRECT 1-ON-1 INCOMING MESSAGES ---")
+            for jid, msgs in direct_chats.items():
+                sender = msgs[0].get("sender", "Contact") if msgs else "Contact"
+                lines.append(f"Contact {sender}:")
+                for item in msgs[-6:]:
+                    lines.append(f"  [{item.get('time')}] {item.get('text')}")
+
+        if active_groups:
+            lines.append("\n--- ACTIVE GROUPS DISCUSSION SAMPLES ---")
+            for gr in active_groups:
+                lines.append(f"Group '{gr.get('chat_name')}' ({gr.get('count')} msgs):")
+                for s in gr.get("samples", []):
+                    lines.append(f"  {s}")
+
+        raw_context = "\n".join(lines)
+        today_str = datetime.now().strftime("%d %b %Y")
+
+        prompt = (
+            "You are WAmate, an elite Executive Personal AI Assistant. "
+            "Analyze the following incoming WhatsApp messages from the past 24 hours and synthesize a concise, high-value Morning Executive Digest.\n\n"
+            "Format the digest cleanly using WhatsApp-compatible markdown (*bold*, _italic_, emojis):\n"
+            f"🌅 *WAmate Morning Executive Digest* — {today_str}\n\n"
+            "1. 🔥 *Urgent Mentions & Direct Inquiries:*\n"
+            "   (List any urgent questions, requests, or mentions of the user. If none, state 'No urgent inquiries.')\n\n"
+            "2. 📌 *Key Action Items & Decisions:*\n"
+            "   (Bullet-point commitments, tasks, meetings, or decisions agreed upon.)\n\n"
+            "3. 💬 *Group Highlights:*\n"
+            "   (1-2 crisp bullet points per active group summarizing main discussion topics without trivia.)\n\n"
+            "Keep it crisp, actionable, professional, and visually engaging. Avoid pleasantries at the end.\n\n"
+            f"ACTIVITY LOGS:\n{raw_context}"
+        )
+
+        def _invoke(client: genai.Client, model: str) -> str:
+            resp = client.models.generate_content(
+                model=model,
+                contents=[prompt],
+            )
+            return resp.text.strip() if resp and resp.text else ""
+
+        result, last_error, quota_exhausted = self._run_across_keys_and_models(_invoke)
+        if last_error is None and result:
+            return format_for_whatsapp(result)
+
+        if quota_exhausted:
+            return (
+                f"🌅 *WAmate Morning Executive Digest* — {today_str}\n\n"
+                "⚠️ *Notice:* Gemini quota exceeded. Here is your raw activity summary:\n"
+                f"• Direct messages from {len(direct_chats)} contact(s)\n"
+                f"• {len(mentions)} urgent mention(s)\n"
+                f"• {len(active_groups)} active group(s)\n\n"
+                "Check the WAmate Web UI for detailed message transcripts."
+            )
+
+        # Fallback manual summary if Gemini call fails
+        summary_lines = [
+            f"🌅 *WAmate Morning Executive Digest* — {today_str}",
+            f"_Activity in the last {digest_data.get('window_hours', 24)} hours:_\n",
+        ]
+        if mentions:
+            summary_lines.append(f"🔥 *Mentions ({len(mentions)}):*")
+            for m in mentions[:3]:
+                summary_lines.append(f"• *{m.get('sender')}* in {m.get('chat')}: {m.get('text')[:80]}")
+            summary_lines.append("")
+        if direct_chats:
+            summary_lines.append(f"💬 *Direct Messages ({len(direct_chats)} chats):*")
+            for jid, msgs in list(direct_chats.items())[:4]:
+                s = msgs[0].get("sender", "Contact")
+                last_m = msgs[-1].get("text", "")[:80]
+                summary_lines.append(f"• *{s}*: {last_m}")
+            summary_lines.append("")
+        return "\n".join(summary_lines)
+
+    def semantic_rag_search(self, query: str, chat_filter: str = "") -> dict[str, Any]:
+        """Perform semantic concept search using two-tier RAG (FTS5 candidate retrieval + Gemini answer synthesis).
+        Uses exactly ONE Gemini API call to answer the user's conceptual question with citations.
+        """
+        candidates = self.db.get_semantic_search_candidates(query=query, chat_jid=chat_filter, limit=25)
+        if not candidates:
+            return {
+                "answer": f"No relevant conversation history found related to '{query}'. Try searching for different keywords or checking a specific chat.",
+                "results": [],
+            }
+
+        context_lines = []
+        for c in candidates:
+            context_lines.append(
+                f"[{c.get('date_str')}] Chat: '{c.get('chat_name')}' | Sender: {c.get('sender_name')}: {c.get('text')}"
+            )
+        context_block = "\n".join(context_lines)
+
+        prompt = (
+            "You are WAmate's Semantic Search Intelligence Engine. "
+            f"The user is searching their WhatsApp history with this conceptual question:\n\"{query}\"\n\n"
+            "Here are the relevant conversation message excerpts retrieved from their local database:\n"
+            f"{context_block}\n\n"
+            "Instructions:\n"
+            "1. Answer the user's question directly and concisely based ONLY on the provided conversation messages.\n"
+            "2. Explicitly cite who said it, when (date/time), and in which chat or group.\n"
+            "3. If the messages do not provide a clear answer, state what was found or that the information is absent.\n"
+            "4. Format your answer with clean WhatsApp/Markdown (*bold*, _italic_, bullet points).\n"
+        )
+
+        def _invoke(client: genai.Client, model: str) -> str:
+            resp = client.models.generate_content(
+                model=model,
+                contents=[prompt],
+            )
+            return resp.text.strip() if resp and resp.text else ""
+
+        result, last_error, quota_exhausted = self._run_across_keys_and_models(_invoke)
+        if last_error is None and result:
+            return {"answer": format_for_whatsapp(result), "results": candidates}
+
+        if quota_exhausted:
+            return {
+                "answer": (
+                    "⚠️ *Gemini Daily Quota Exceeded (429)*\n\n"
+                    "Semantic AI synthesis is temporarily paused due to API limits. "
+                    "However, matching messages have been retrieved from your local database below."
+                ),
+                "results": candidates,
+            }
+
+        return {
+            "answer": f"Found {len(candidates)} matching message(s) in your chat history:",
+            "results": candidates,
+        }
+
+    def embed_text_query(self, text: str) -> list[float] | None:
+        """Generate vector embedding for a query using Gemini text-embedding-004."""
+        def _invoke(client: genai.Client, model: str) -> list[float] | None:
+            resp = client.models.embed_content(
+                model="text-embedding-004",
+                contents=text,
+            )
+            if resp and resp.embeddings and resp.embeddings[0].values:
+                return list(resp.embeddings[0].values)
+            return None
+
+        result, _, _ = self._run_across_keys_and_models(_invoke)
+        return result

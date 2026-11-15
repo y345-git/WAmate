@@ -2977,6 +2977,10 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
   </div>
   <div class="header-right">
     <div id="statsStrip" class="stats-strip"><span class="stat-pill">Loading stats...</span></div>
+    <button type="button" class="ghost-btn-sm" style="display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600;" onclick="triggerMorningDigest()" title="Generate &amp; send 24-hr executive digest to WhatsApp self-chat">
+      <svg class="ico-xs" style="color:#f59e0b;" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+      <span>Morning Digest</span>
+    </button>
     __LOGOUT_BTN__
   </div>
 </header>
@@ -3045,8 +3049,12 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
         <svg class="ico-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
         <span>Search</span>
       </button>
+      <button id="semanticSearchBtn" type="button" class="ghost-btn" style="color:var(--accent);border:1px solid rgba(0,200,150,0.3);" onclick="executeSemanticSearch()" title="Ask natural language question or search conceptual meaning (e.g. 'What did mom say about the clinic?')">
+        <span>✨ AI Concept Search</span>
+      </button>
       <button id="searchClearBtn" class="ghost-btn" title="Reset Search Filters">Clear</button>
     </div>
+    <div id="semanticAnswerBox" style="display:none;margin-top:10px;"></div>
     <div id="searchSummary" class="toolbar-summary"></div>
     <div id="searchResults" class="results-list"></div>
     <div class="load-more-wrap"><button id="searchMoreBtn" class="ghost-btn" style="display:none">Load More Results</button></div>
@@ -3329,6 +3337,16 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
               <button type="button" class="sched-preset-btn" onclick="applySchedulePreset('tomorrow_am')">Tomorrow 9 AM</button>
               <button type="button" class="sched-preset-btn" onclick="applySchedulePreset('tomorrow_pm')">Tomorrow 6 PM</button>
             </div>
+          </div>
+          <div class="bcast-field">
+            <label class="bcast-label">Recurrence / Repeat Schedule</label>
+            <div class="bcast-toggle-group">
+              <label class="bcast-toggle-opt"><input type="radio" name="schedRecurrence" value="none" checked onchange="onSchedRecurrenceChange()"/><span>One-Time</span></label>
+              <label class="bcast-toggle-opt"><input type="radio" name="schedRecurrence" value="daily" onchange="onSchedRecurrenceChange()"/><span>Daily</span></label>
+              <label class="bcast-toggle-opt"><input type="radio" name="schedRecurrence" value="weekly" onchange="onSchedRecurrenceChange()"/><span>Weekly</span></label>
+              <label class="bcast-toggle-opt"><input type="radio" name="schedRecurrence" value="monthly" onchange="onSchedRecurrenceChange()"/><span>Monthly</span></label>
+            </div>
+            <span id="schedRecurrenceHint" class="bcast-hint" style="font-size:11px;color:var(--muted);margin-top:4px;">Dispatches once at the selected date &amp; time.</span>
           </div>
           <div class="bcast-field">
             <label class="bcast-label">Audience Scope</label>
@@ -4219,6 +4237,8 @@ async function runSearch(reset=true) {
   const statuses = document.getElementById('searchStatuses').checked ? '1' : '0';
   const fromD = document.getElementById('searchFrom').value;
   const toD = document.getElementById('searchTo').value;
+  const ansBox = document.getElementById('semanticAnswerBox');
+  if (ansBox && reset) ansBox.style.display = 'none';
   const rows = await apiGet(`/api/search?q=${encodeURIComponent(q)}&chat=${encodeURIComponent(chat)}&scope=${encodeURIComponent(scope)}&media_type=${encodeURIComponent(mediaType)}&statuses=${statuses}&from=${encodeURIComponent(fromD)}&to=${encodeURIComponent(toD)}&limit=50&offset=${searchOffset}`);
   const box = document.getElementById('searchResults');
   if (reset) box.innerHTML = '';
@@ -4230,6 +4250,69 @@ async function runSearch(reset=true) {
   }
   renderSearchSummary(searchOffset);
   document.getElementById('searchMoreBtn').style.display = rows.length === 50 ? 'inline-flex' : 'none';
+}
+
+async function executeSemanticSearch() {
+  const q = document.getElementById('searchQuery').value.trim();
+  const chat = document.getElementById('searchChat').value.trim();
+  const box = document.getElementById('searchResults');
+  const answerBox = document.getElementById('semanticAnswerBox');
+  if (!q) {
+    showToast('Please type a question or concept to search for (e.g. "hospital appointment" or "wifi password").');
+    return;
+  }
+
+  if (answerBox) {
+    answerBox.style.display = 'block';
+    answerBox.innerHTML = `
+      <div class="bcast-card" style="border-left:4px solid var(--accent);background:#091219;padding:14px 18px;margin-bottom:14px;">
+        <div style="display:flex;align-items:center;gap:8px;font-weight:700;color:var(--accent);margin-bottom:6px;">
+          <svg class="ico-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+          <span>AI Concept Analysis</span>
+        </div>
+        <div style="font-size:13px;color:var(--muted)">Synthesizing answer from your WhatsApp conversations...</div>
+      </div>
+    `;
+  }
+
+  try {
+    const res = await fetch(`/api/search/semantic?q=${encodeURIComponent(q)}&chat=${encodeURIComponent(chat)}`);
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || 'Search failed');
+
+    const answer = data.answer || '';
+    const results = data.results || [];
+
+    if (answerBox) {
+      answerBox.style.display = 'block';
+      answerBox.innerHTML = `
+        <div class="bcast-card" style="border-left:4px solid var(--accent);background:#091219;padding:14px 18px;margin-bottom:14px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+            <div style="display:flex;align-items:center;gap:8px;font-weight:700;color:var(--accent);">
+              <svg class="ico-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+              <span>AI Second Brain Answer</span>
+            </div>
+            <button type="button" class="ghost-btn-sm" onclick="document.getElementById('semanticAnswerBox').style.display='none'">✕</button>
+          </div>
+          <div style="font-size:13px;line-height:1.6;color:var(--text);white-space:pre-wrap;word-break:break-word;">${esc(answer)}</div>
+        </div>
+      `;
+    }
+
+    if (box) {
+      if (results.length > 0) {
+        box.innerHTML = results.map(renderMessageCard).join('');
+      } else {
+        box.innerHTML = '<div class="empty-state" style="margin:16px 0;"><div>No direct candidate messages found.</div></div>';
+      }
+    }
+    const moreBtn = document.getElementById('searchMoreBtn');
+    if (moreBtn) moreBtn.style.display = 'none';
+  } catch (e) {
+    if (answerBox) {
+      answerBox.innerHTML = `<div class="bcast-empty" style="color:var(--danger)">Semantic search failed: ${esc(e.message)}</div>`;
+    }
+  }
 }
 document.getElementById('searchBtn').addEventListener('click', () => runSearch(true));
 document.getElementById('searchMoreBtn').addEventListener('click', () => runSearch(false));
@@ -5853,6 +5936,22 @@ async function updateSchedPreview() {
   }
 }
 
+function onSchedRecurrenceChange() {
+  const el = document.querySelector('input[name="schedRecurrence"]:checked');
+  const val = el ? el.value : 'none';
+  const hint = document.getElementById('schedRecurrenceHint');
+  if (!hint) return;
+  if (val === 'daily') {
+    hint.textContent = 'Repeats automatically every day at this exact time.';
+  } else if (val === 'weekly') {
+    hint.textContent = 'Repeats automatically every week on this day at this exact time.';
+  } else if (val === 'monthly') {
+    hint.textContent = 'Repeats automatically every month on this date at this exact time.';
+  } else {
+    hint.textContent = 'Dispatches once at the scheduled date & time.';
+  }
+}
+
 async function submitScheduleCampaign() {
   const timeInput = document.getElementById('schedTimeInput');
   const schedTime = (timeInput ? timeInput.value : '').trim();
@@ -5862,6 +5961,8 @@ async function submitScheduleCampaign() {
   const audience = audEl ? audEl.value : 'both';
   const roles = getSelectedRoles('schedRolePills');
   const attachment = window._schedAttachData;
+  const recEl = document.querySelector('input[name="schedRecurrence"]:checked');
+  const recurrence = recEl ? recEl.value : 'none';
 
   if (!schedTime) {
     showToast('Please select a date and time for the scheduled campaign.');
@@ -5886,6 +5987,7 @@ async function submitScheduleCampaign() {
         specific_recipients: window._schedSpecificRecipients,
         message,
         attachment,
+        recurrence_type: recurrence,
       }),
     });
     const data = await res.json().catch(() => ({}));
@@ -5924,6 +6026,7 @@ async function loadScheduledQueue() {
         <thead>
           <tr>
             <th>Scheduled For</th>
+            <th>Recurrence</th>
             <th>Audience / Roles</th>
             <th>Message</th>
             <th>Attachment</th>
@@ -5938,9 +6041,19 @@ async function loadScheduledQueue() {
             const hasAtt = item.attachment_filename ? `📎 ${esc(item.attachment_filename)}` : '—';
             const rolesStr = (item.roles || []).join(', ') || 'All';
             const msgSnippet = esc((item.message || '').slice(0, 48)) || '(attachment only)';
+            const recType = (item.recurrence_type || 'none').toLowerCase();
+            let recBadge = '<span style="font-size:11px;color:var(--muted)">One-time</span>';
+            if (recType === 'daily') {
+              recBadge = '<span class="stat-pill" style="font-size:10px;color:var(--accent);">🔁 Daily</span>';
+            } else if (recType === 'weekly') {
+              recBadge = '<span class="stat-pill" style="font-size:10px;color:var(--accent);">🔁 Weekly</span>';
+            } else if (recType === 'monthly') {
+              recBadge = '<span class="stat-pill" style="font-size:10px;color:var(--accent);">🔁 Monthly</span>';
+            }
             return `
               <tr>
                 <td style="white-space:nowrap;font-weight:600;">${formatScheduledTimeSnippet(item.scheduled_time)}</td>
+                <td>${recBadge}</td>
                 <td><span class="stat-pill" style="font-size:11px;">${esc(item.target_audience || 'both')}</span> <span style="font-size:11px;color:var(--muted)">(${esc(rolesStr)})</span></td>
                 <td>${msgSnippet}</td>
                 <td style="font-size:11px;">${hasAtt}</td>
@@ -6007,6 +6120,18 @@ async function deleteScheduled(campId) {
     loadScheduledQueue();
   } catch (e) {
     showToast(`Action failed: ${e.message}`);
+  }
+}
+
+async function triggerMorningDigest() {
+  showToast('Generating 24-hr Morning Executive Digest with Gemini...');
+  try {
+    const res = await fetch('/api/digest/generate_now', { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error || 'Failed generating digest');
+    showToast('☀️ Morning Digest delivered to your WhatsApp self-chat!');
+  } catch (e) {
+    showToast(`Digest error: ${e.message}`);
   }
 }
 
@@ -7355,6 +7480,20 @@ class WebUIServer:
                         )
                         return
 
+                    if path == "/api/search/semantic":
+                        q = (qs.get("q", [""])[0] or "").strip()
+                        chat = (qs.get("chat", [""])[0] or "").strip()
+                        if not q:
+                            self._send_json({"error": "Query 'q' is required"}, status=400)
+                            return
+                        if not parent.gemini:
+                            candidates = parent.db.get_semantic_search_candidates(query=q, chat_jid=chat)
+                            self._send_json({"ok": True, "answer": f"Found {len(candidates)} candidate message(s).", "results": candidates})
+                            return
+                        res = parent.gemini.semantic_rag_search(query=q, chat_filter=chat)
+                        self._send_json({"ok": True, "answer": res.get("answer", ""), "results": res.get("results", [])})
+                        return
+
                     if path == "/api/media_list":
                         flt = (qs.get("filter", ["all"])[0] or "all").strip()
                         q = (qs.get("q", [""])[0] or "").strip()
@@ -7800,6 +7939,11 @@ class WebUIServer:
                             self._send_json({"error": f"Failed saving attachment: {e_att}"}, status=400)
                             return
 
+                    rec_type = str(payload.get("recurrence_type") or "none").strip().lower()
+                    if rec_type not in ("none", "daily", "weekly", "monthly"):
+                        rec_type = "none"
+                    rec_interval = _clamp_int(payload.get("recurrence_interval", 1), 1, 1, 365)
+
                     camp_id = parent.db.create_scheduled_campaign(
                         message=message,
                         scheduled_time=sched_time,
@@ -7810,6 +7954,8 @@ class WebUIServer:
                         attachment_path=att_path,
                         attachment_filename=att_fname,
                         attachment_mimetype=att_mime,
+                        recurrence_type=rec_type,
+                        recurrence_interval=rec_interval,
                     )
                     self._send_json({"ok": True, "id": camp_id})
                     return
@@ -7843,6 +7989,17 @@ class WebUIServer:
                     if parent.bot_client and hasattr(parent.bot_client, "trigger_scheduled_campaign_now"):
                         parent.bot_client.trigger_scheduled_campaign_now(camp_id)
                     self._send_json({"ok": True})
+                    return
+
+                if path == "/api/digest/generate_now":
+                    if not parent.bot_client:
+                        self._send_json({"error": "WhatsApp bot client not active"}, status=503)
+                        return
+                    ok, detail = parent.bot_client.generate_and_send_morning_digest(force=True)
+                    if ok:
+                        self._send_json({"ok": True, "message": "Morning executive digest delivered to self-chat!", "digest": detail})
+                    else:
+                        self._send_json({"ok": False, "error": detail}, status=500)
                     return
 
                 if path == "/api/campaigns/import_excel":

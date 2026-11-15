@@ -343,11 +343,23 @@ class DatabaseManager:
                     total_targets INTEGER DEFAULT 0,
                     sent_count INTEGER DEFAULT 0,
                     failed_count INTEGER DEFAULT 0,
-                    log_details TEXT DEFAULT '[]'
+                    log_details TEXT DEFAULT '[]',
+                    recurrence_type TEXT DEFAULT 'none',
+                    recurrence_interval INTEGER DEFAULT 1
                 );
                 """
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_sched_status_ts ON scheduled_campaigns(status, scheduled_ts);")
+
+            # Migration: Ensure recurrence columns exist in scheduled_campaigns
+            for col_sql in (
+                "ALTER TABLE scheduled_campaigns ADD COLUMN recurrence_type TEXT DEFAULT 'none';",
+                "ALTER TABLE scheduled_campaigns ADD COLUMN recurrence_interval INTEGER DEFAULT 1;",
+            ):
+                try:
+                    conn.execute(col_sql)
+                except Exception:
+                    pass
 
             # 11. Broadcast Campaign Delivery History Logs
             conn.execute(
@@ -3283,12 +3295,18 @@ class DatabaseManager:
         attachment_path: str = "",
         attachment_filename: str = "",
         attachment_mimetype: str = "",
+        recurrence_type: str = "none",
+        recurrence_interval: int = 1,
     ) -> str:
         """Register a future scheduled campaign in SQLite."""
         camp_id = f"sched_{datetime.now().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:6]}"
         now_ts = int(time.time())
         roles_json = json.dumps(roles or [])
         recipients_json = json.dumps(specific_recipients or [])
+        clean_rec_type = (recurrence_type or "none").strip().lower()
+        if clean_rec_type not in ("none", "daily", "weekly", "monthly"):
+            clean_rec_type = "none"
+        clean_interval = max(1, int(recurrence_interval or 1))
 
         with self._get_connection() as conn:
             conn.execute(
@@ -3296,8 +3314,9 @@ class DatabaseManager:
                 INSERT INTO scheduled_campaigns (
                     id, message, attachment_path, attachment_filename, attachment_mimetype,
                     target_audience, roles, specific_recipients, scheduled_time, scheduled_ts,
-                    status, created_at, sent_at, total_targets, sent_count, failed_count, log_details
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, 0, 0, 0, 0, '[]')
+                    status, created_at, sent_at, total_targets, sent_count, failed_count, log_details,
+                    recurrence_type, recurrence_interval
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, 0, 0, 0, 0, '[]', ?, ?)
                 """,
                 (
                     camp_id,
@@ -3311,6 +3330,8 @@ class DatabaseManager:
                     (scheduled_time or "").strip(),
                     int(scheduled_ts),
                     now_ts,
+                    clean_rec_type,
+                    clean_interval,
                 ),
             )
             conn.commit()
@@ -3328,7 +3349,9 @@ class DatabaseManager:
         sql = f"""
             SELECT id, message, attachment_path, attachment_filename, attachment_mimetype,
                    target_audience, roles, specific_recipients, scheduled_time, scheduled_ts,
-                   status, created_at, sent_at, total_targets, sent_count, failed_count, log_details
+                   status, created_at, sent_at, total_targets, sent_count, failed_count, log_details,
+                   COALESCE(recurrence_type, 'none') AS recurrence_type,
+                   COALESCE(recurrence_interval, 1) AS recurrence_interval
             FROM scheduled_campaigns
             {where}
             ORDER BY CASE WHEN status = 'pending' THEN 0 ELSE 1 END, scheduled_ts ASC
@@ -3371,6 +3394,8 @@ class DatabaseManager:
                     "sent_count": int(r["sent_count"] or 0),
                     "failed_count": int(r["failed_count"] or 0),
                     "logs": logs_list,
+                    "recurrence_type": r["recurrence_type"] or "none",
+                    "recurrence_interval": int(r["recurrence_interval"] or 1),
                 })
             return out
 
@@ -3383,7 +3408,9 @@ class DatabaseManager:
                 """
                 SELECT id, message, attachment_path, attachment_filename, attachment_mimetype,
                        target_audience, roles, specific_recipients, scheduled_time, scheduled_ts,
-                       status, created_at, sent_at, total_targets, sent_count, failed_count, log_details
+                       status, created_at, sent_at, total_targets, sent_count, failed_count, log_details,
+                       COALESCE(recurrence_type, 'none') AS recurrence_type,
+                       COALESCE(recurrence_interval, 1) AS recurrence_interval
                 FROM scheduled_campaigns
                 WHERE id = ?
                 """,
@@ -3409,6 +3436,8 @@ class DatabaseManager:
                 "sent_count": int(row["sent_count"] or 0),
                 "failed_count": int(row["failed_count"] or 0),
                 "logs": json.loads(row["log_details"] or "[]"),
+                "recurrence_type": row["recurrence_type"] or "none",
+                "recurrence_interval": int(row["recurrence_interval"] or 1),
             }
 
     def get_due_scheduled_campaigns(self, now_ts: int | None = None) -> list[dict[str, Any]]:
@@ -3419,7 +3448,9 @@ class DatabaseManager:
                 """
                 SELECT id, message, attachment_path, attachment_filename, attachment_mimetype,
                        target_audience, roles, specific_recipients, scheduled_time, scheduled_ts,
-                       status, created_at, sent_at, total_targets, sent_count, failed_count, log_details
+                       status, created_at, sent_at, total_targets, sent_count, failed_count, log_details,
+                       COALESCE(recurrence_type, 'none') AS recurrence_type,
+                       COALESCE(recurrence_interval, 1) AS recurrence_interval
                 FROM scheduled_campaigns
                 WHERE status = 'pending' AND scheduled_ts <= ?
                 ORDER BY scheduled_ts ASC
@@ -3440,8 +3471,67 @@ class DatabaseManager:
                     "scheduled_time": row["scheduled_time"] or "",
                     "scheduled_ts": int(row["scheduled_ts"] or 0),
                     "status": row["status"] or "pending",
+                    "recurrence_type": row["recurrence_type"] or "none",
+                    "recurrence_interval": int(row["recurrence_interval"] or 1),
                 })
             return out
+
+    def advance_scheduled_campaign_recurrence(self, camp_id: str) -> tuple[int, str] | None:
+        """Compute the next scheduled run for a recurring campaign and reset status to pending."""
+        import calendar
+
+        camp = self.get_scheduled_campaign(camp_id)
+        if not camp:
+            return None
+
+        rec_type = (camp.get("recurrence_type") or "none").strip().lower()
+        if rec_type not in ("daily", "weekly", "monthly"):
+            return None
+
+        interval = max(1, int(camp.get("recurrence_interval") or 1))
+        curr_ts = int(camp.get("scheduled_ts") or time.time())
+        curr_dt = datetime.fromtimestamp(curr_ts)
+        now_ts = int(time.time())
+
+        def _add_months(dt: datetime, n: int) -> datetime:
+            month = dt.month - 1 + n
+            year = dt.year + month // 12
+            month = month % 12 + 1
+            day = min(dt.day, calendar.monthrange(year, month)[1])
+            return dt.replace(year=year, month=month, day=day)
+
+        next_dt = curr_dt
+        if rec_type == "daily":
+            next_dt += timedelta(days=interval)
+            while int(next_dt.timestamp()) <= now_ts:
+                next_dt += timedelta(days=interval)
+        elif rec_type == "weekly":
+            next_dt += timedelta(weeks=interval)
+            while int(next_dt.timestamp()) <= now_ts:
+                next_dt += timedelta(weeks=interval)
+        elif rec_type == "monthly":
+            next_dt = _add_months(next_dt, interval)
+            while int(next_dt.timestamp()) <= now_ts:
+                next_dt = _add_months(next_dt, interval)
+
+        next_ts = int(next_dt.timestamp())
+        next_time_str = next_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+        with self._get_connection() as conn:
+            conn.execute(
+                """
+                UPDATE scheduled_campaigns
+                SET scheduled_ts = ?,
+                    scheduled_time = ?,
+                    status = 'pending',
+                    sent_at = ?
+                WHERE id = ?
+                """,
+                (next_ts, next_time_str, now_ts, camp_id),
+            )
+            conn.commit()
+
+        return next_ts, next_time_str
 
     def update_scheduled_campaign_status(
         self,
@@ -3709,3 +3799,182 @@ class DatabaseManager:
                 stats["groups"] += 1
 
         return stats
+
+    def get_digest_activity_window(self, lookback_hours: int = 24, my_user_number: str = "") -> dict[str, Any]:
+        """Collect recent unread/unanswered messages, group mentions, and high-traffic group discussions for the morning executive digest."""
+        since_ts = int(time.time()) - (max(1, int(lookback_hours)) * 3600)
+        clean_user_num = "".join(ch for ch in str(my_user_number or "") if ch.isdigit())
+
+        with self._get_connection() as conn:
+            # 1. Direct 1-on-1 incoming messages (excluding status broadcasts and self)
+            direct_rows = conn.execute(
+                """
+                SELECT m.id, m.chat_jid, m.chat_name, m.sender_name, m.text, m.timestamp, m.media_type
+                FROM messages m
+                WHERE m.timestamp >= ?
+                  AND m.is_from_me = 0
+                  AND m.chat_jid NOT LIKE '%@g.us'
+                  AND m.chat_jid NOT LIKE 'status@broadcast%'
+                  AND TRIM(COALESCE(m.text, '')) != ''
+                ORDER BY m.timestamp ASC
+                LIMIT 150
+                """,
+                (since_ts,),
+            ).fetchall()
+
+            direct_chats: dict[str, list[dict[str, Any]]] = {}
+            for r in direct_rows:
+                c_jid = r["chat_jid"]
+                if c_jid not in direct_chats:
+                    direct_chats[c_jid] = []
+                direct_chats[c_jid].append({
+                    "id": r["id"],
+                    "sender": r["sender_name"] or r["chat_name"] or c_jid.split("@")[0],
+                    "text": (r["text"] or "").strip(),
+                    "time": datetime.fromtimestamp(r["timestamp"]).strftime("%H:%M"),
+                })
+
+            # 2. Group mentions of the user
+            mentions = []
+            if clean_user_num:
+                mention_rows = conn.execute(
+                    """
+                    SELECT m.id, m.chat_jid, m.chat_name, m.sender_name, m.text, m.timestamp
+                    FROM messages m
+                    WHERE m.timestamp >= ?
+                      AND m.is_from_me = 0
+                      AND m.chat_jid LIKE '%@g.us'
+                      AND (m.text LIKE ? OR LOWER(m.text) LIKE '%urgent%' OR LOWER(m.text) LIKE '%please check%')
+                    ORDER BY m.timestamp ASC
+                    LIMIT 40
+                    """,
+                    (since_ts, f"%{clean_user_num}%"),
+                ).fetchall()
+
+                mentions = [
+                    {
+                        "chat": r["chat_name"] or r["chat_jid"],
+                        "sender": r["sender_name"] or "Someone",
+                        "text": (r["text"] or "").strip(),
+                        "time": datetime.fromtimestamp(r["timestamp"]).strftime("%H:%M"),
+                    }
+                    for r in mention_rows
+                ]
+
+            # 3. High-traffic groups activity
+            group_summary_rows = conn.execute(
+                """
+                SELECT m.chat_jid, m.chat_name, COUNT(*) as msg_count
+                FROM messages m
+                WHERE m.timestamp >= ?
+                  AND m.chat_jid LIKE '%@g.us'
+                GROUP BY m.chat_jid
+                ORDER BY msg_count DESC
+                LIMIT 6
+                """,
+                (since_ts,),
+            ).fetchall()
+
+            active_groups = []
+            for gr in group_summary_rows:
+                g_jid = gr["chat_jid"]
+                g_name = gr["chat_name"] or g_jid
+                sample_msgs = conn.execute(
+                    """
+                    SELECT sender_name, text FROM messages
+                    WHERE chat_jid = ? AND timestamp >= ? AND TRIM(COALESCE(text, '')) != ''
+                    ORDER BY timestamp DESC
+                    LIMIT 8
+                    """,
+                    (g_jid, since_ts),
+                ).fetchall()
+                samples = [f"{s['sender_name'] or 'Member'}: {s['text'][:90]}" for s in reversed(sample_msgs)]
+                active_groups.append({
+                    "chat_name": g_name,
+                    "count": gr["msg_count"],
+                    "samples": samples,
+                })
+
+            total_count = len(direct_rows) + len(mentions)
+
+            return {
+                "window_hours": lookback_hours,
+                "direct_chats": direct_chats,
+                "mentions": mentions,
+                "active_groups": active_groups,
+                "total_messages": total_count,
+            }
+
+    def get_semantic_search_candidates(
+        self, query: str, chat_jid: str = "", limit: int = 30
+    ) -> list[dict[str, Any]]:
+        """Retrieve candidate messages and their surrounding conversation context for semantic RAG synthesis."""
+        q_clean = (query or "").strip().lower()
+        if not q_clean:
+            return []
+
+        stop_words = {
+            "what", "when", "where", "who", "whom", "which", "why", "how",
+            "did", "do", "does", "is", "are", "was", "were", "the", "a", "an",
+            "in", "on", "at", "about", "say", "tell", "share", "send", "give",
+            "me", "my", "your", "his", "her", "their", "our", "to", "for", "from"
+        }
+        tokens = [w for w in re.findall(r"\w+", q_clean) if len(w) >= 3 and w not in stop_words]
+        if not tokens:
+            tokens = [w for w in re.findall(r"\w+", q_clean) if len(w) >= 2]
+
+        with self._get_connection() as conn:
+            where_clauses = ["m.chat_jid != 'status@broadcast'"]
+            params: list[Any] = []
+
+            if chat_jid:
+                where_clauses.append("(m.chat_jid = ? OR m.sender_jid = ?)")
+                params.extend([chat_jid, chat_jid])
+
+            # Check if any token matches a known contact or chat name
+            matched_chats = set()
+            for tok in tokens:
+                matched = conn.execute(
+                    "SELECT jid FROM contacts WHERE LOWER(name) LIKE ? OR LOWER(push_name) LIKE ? LIMIT 5",
+                    (f"%{tok}%", f"%{tok}%"),
+                ).fetchall()
+                for row in matched:
+                    matched_chats.add(row["jid"])
+
+            # Build token match condition
+            if tokens:
+                token_conditions = []
+                for tok in tokens:
+                    token_conditions.append("(LOWER(m.text) LIKE ? OR LOWER(m.chat_name) LIKE ? OR LOWER(m.sender_name) LIKE ?)")
+                    params.extend([f"%{tok}%", f"%{tok}%", f"%{tok}%"])
+                if matched_chats:
+                    chat_placeholders = ",".join("?" for _ in matched_chats)
+                    where_clauses.append(f"(({' OR '.join(token_conditions)}) OR m.chat_jid IN ({chat_placeholders}))")
+                    params.extend(list(matched_chats))
+                else:
+                    where_clauses.append(f"({' OR '.join(token_conditions)})")
+
+            sql = f"""
+                SELECT m.id, m.chat_jid, m.chat_name, m.sender_jid, m.sender_name, m.text, m.timestamp, m.media_type, m.is_from_me
+                FROM messages m
+                WHERE {' AND '.join(where_clauses)}
+                ORDER BY m.timestamp DESC
+                LIMIT ?
+            """
+            params.append(max(5, int(limit)))
+            rows = conn.execute(sql, tuple(params)).fetchall()
+
+            candidates = []
+            for r in rows:
+                candidates.append({
+                    "id": r["id"],
+                    "chat_jid": r["chat_jid"],
+                    "chat_name": r["chat_name"] or r["chat_jid"].split("@")[0],
+                    "sender_name": r["sender_name"] or ("You" if r["is_from_me"] else "Unknown"),
+                    "text": (r["text"] or "").strip(),
+                    "timestamp": int(r["timestamp"]),
+                    "date_str": datetime.fromtimestamp(r["timestamp"]).strftime("%Y-%m-%d %H:%M:%S"),
+                    "media_type": r["media_type"] or "text",
+                    "is_from_me": bool(r["is_from_me"]),
+                })
+            return candidates

@@ -64,6 +64,7 @@ class WhatsAppBot:
         self.my_lid_number = ""
         self.my_lid_jid = ""
         self.last_self_chat_jid = None
+        self._last_digest_date = ""
         self.history_sync_completed = False
         self.active_broadcast_progress: dict[str, Any] = {
             "status": "idle",
@@ -1617,6 +1618,9 @@ class WhatsAppBot:
             attachment_mimetype=camp.get("attachment_mimetype", ""),
         )
 
+        rec_type = (camp.get("recurrence_type") or "none").strip().lower()
+        is_recurring = rec_type in ("daily", "weekly", "monthly")
+
         final_status = "sent" if result["sent"] > 0 else "failed"
         self.db.update_scheduled_campaign_status(
             camp_id,
@@ -1626,6 +1630,8 @@ class WhatsAppBot:
             total_targets=result["total"],
             logs=result["logs"],
         )
+
+        camp_type_label = f"Recurring ({rec_type.capitalize()})" if is_recurring else "scheduled"
 
         # Record in campaign history
         self.db.record_campaign_history(
@@ -1641,15 +1647,57 @@ class WhatsAppBot:
             logs=result["logs"],
             attachment_path=camp.get("attachment_path", ""),
             attachment_filename=att_fname,
-            campaign_type="scheduled",
+            campaign_type=camp_type_label,
             camp_id=camp_id,
         )
+
+        # If recurring, advance to the next scheduled run and keep status pending
+        if is_recurring:
+            next_run = self.db.advance_scheduled_campaign_recurrence(camp_id)
+            if next_run:
+                next_ts, next_time_str = next_run
+                logger.info("Recurring campaign %s (%s) advanced to next run: %s", camp_id, rec_type, next_time_str)
 
         return True, f"Broadcast complete: {result['sent']} sent, {result['failed']} failed."
 
     def trigger_scheduled_campaign_now(self, camp_id: str) -> tuple[bool, str]:
         """Manually trigger immediate execution of a scheduled campaign."""
         return self.dispatch_scheduled_campaign(camp_id)
+
+    def generate_and_send_morning_digest(self, force: bool = False) -> tuple[bool, str]:
+        """Synthesize and send 24-hr executive digest to the user's WhatsApp self-chat."""
+        if not self.gemini:
+            return False, "Gemini AI is not initialized."
+
+        self_jid = self.get_self_chat_jid()
+        if not self_jid:
+            return False, "Self-chat destination JID could not be determined. Send a message to yourself in WhatsApp first."
+
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        if not force and getattr(self, "_last_digest_date", "") == today_str:
+            return False, "Today's morning digest has already been sent."
+
+        try:
+            digest_data = self.db.get_digest_activity_window(
+                lookback_hours=Config.DIGEST_LOOKBACK_HOURS,
+                my_user_number=getattr(self, "my_user_number", ""),
+            )
+            digest_text = self.gemini.generate_morning_digest(digest_data)
+
+            # Clean companion device JID to prevent whatsmeow multi-device assertion
+            clean_dest = clean_recipient_jid(self_jid) or self_jid
+            if hasattr(clean_dest, "Device"):
+                clean_dest.Device = 0
+            if hasattr(clean_dest, "RawAgent"):
+                clean_dest.RawAgent = 0
+
+            self.client.send_message(clean_dest, digest_text)
+            self._last_digest_date = today_str
+            logger.info("Morning executive digest sent to self-chat successfully.")
+            return True, digest_text
+        except Exception as e:
+            logger.exception("Failed generating morning digest: %s", e)
+            return False, f"Failed generating digest: {e}"
 
     def _start_scheduler_worker(self) -> None:
         """Start the background campaign scheduler thread."""
@@ -1676,6 +1724,17 @@ class WhatsAppBot:
                         break
                     logger.info("Executing due scheduled campaign: %s", camp["id"])
                     self.dispatch_scheduled_campaign(camp["id"])
+
+                # Check Daily Morning Executive Digest
+                if Config.DIGEST_ENABLED:
+                    now_dt = datetime.now()
+                    today_str = now_dt.strftime("%Y-%m-%d")
+                    target_time = Config.DIGEST_TIME
+                    curr_time = now_dt.strftime("%H:%M")
+                    if curr_time >= target_time and getattr(self, "_last_digest_date", "") != today_str:
+                        if self.get_self_chat_jid():
+                            logger.info("Triggering scheduled morning executive digest (%s)...", curr_time)
+                            self.generate_and_send_morning_digest(force=False)
             except Exception as e:
                 logger.debug("Error in scheduler loop: %s", e)
 

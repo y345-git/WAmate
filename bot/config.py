@@ -64,6 +64,12 @@ class Config:
     # Anti-Delete & Edit Vault (always preserves deleted/edited originals in SQLite; set true for live self-chat alerts)
     ANTI_DELETE_NOTIFY: bool = os.getenv("ANTI_DELETE_NOTIFY", "false").lower() in ("true", "1", "yes")
 
+    # Daily Morning Executive Digest (AI summary sent to self-chat)
+    DIGEST_ENABLED: bool = os.getenv("DIGEST_ENABLED", "true").lower() in ("true", "1", "yes")
+    DIGEST_TIME: str = os.getenv("DIGEST_TIME", "08:30").strip()  # HH:MM 24-hr local time
+    DIGEST_LOOKBACK_HOURS: int = int(os.getenv("DIGEST_LOOKBACK_HOURS", "24"))
+    DIGEST_INCLUDE_GROUPS: bool = os.getenv("DIGEST_INCLUDE_GROUPS", "true").lower() in ("true", "1", "yes")
+
     # Lightweight Web Search & Media Browser UI (binds cleanly to localhost by default for SSH tunnel / Tailscale safety)
     ENABLE_WEB_UI: bool = os.getenv("ENABLE_WEB_UI", "true").lower() in ("true", "1", "yes")
     WEB_UI_HOST: str = os.getenv("WEB_UI_HOST", "127.0.0.1").strip() or "127.0.0.1"

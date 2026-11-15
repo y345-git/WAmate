@@ -196,7 +196,25 @@ def test_all():
     )
     assert db.cancel_scheduled_campaign(camp_id2) is True
     assert db.delete_scheduled_campaign(camp_id2) is True
-    print("   [OK] Scheduled campaign lifecycle and status=all queue verified.")
+
+    # Test Recurring campaign (daily)
+    rec_camp_id = db.create_scheduled_campaign(
+        message="Daily standup for {name}",
+        scheduled_time="2026-11-14T09:00:00",
+        scheduled_ts=int(time.time()) - 30,
+        target_audience="contacts",
+        roles=["VIP"],
+        recurrence_type="daily",
+        recurrence_interval=1,
+    )
+    rec_camp = db.get_scheduled_campaign(rec_camp_id)
+    assert rec_camp["recurrence_type"] == "daily"
+    # Dispatch recurring campaign
+    bot.dispatch_scheduled_campaign(rec_camp_id)
+    rec_camp_after = db.get_scheduled_campaign(rec_camp_id)
+    assert rec_camp_after["status"] == "pending", "Recurring campaign must remain pending for next run"
+    assert rec_camp_after["scheduled_ts"] > int(time.time()), "Recurring campaign scheduled_ts must be advanced to future"
+    print("   [OK] Recurring campaign execution, recurrence advancement, and queue state verified.")
 
     # 5. Test Excel Export and Import
     print("\n5. Testing Excel Workbook export and import...")
@@ -266,6 +284,57 @@ def test_all():
     vip_preview = db.lookup_recipients_by_roles(roles=["VIP"], target_audience="both")
     assert any(r["jid"] == c1 for r in vip_preview), "Alice (VIP) must be in preview"
     print("   [OK] Broadcast recipients preview query accurately resolves targeted entities.")
+
+    # 8. Test Daily Morning Executive Digest
+    print("\n8. Testing Daily Morning Executive Digest generation and self-chat dispatch...")
+    # Add dummy incoming messages in the past 24 hours
+    now_ts = int(time.time())
+    db.insert_message(
+        msg_id="DIGEST_MSG_1",
+        chat_jid="919000000001@s.whatsapp.net",
+        chat_name="Alice VIP",
+        sender_jid="919000000001@s.whatsapp.net",
+        sender_name="Alice",
+        text="Could you please send the Q4 financial report?",
+        timestamp=now_ts - 3600,
+        is_from_me=False,
+    )
+    db.insert_message(
+        msg_id="DIGEST_MSG_2",
+        chat_jid="120363000000001@g.us",
+        chat_name="Investors",
+        sender_jid="919000000002@s.whatsapp.net",
+        sender_name="Bob",
+        text="Urgent meeting @919876543210 please check your schedule",
+        timestamp=now_ts - 1800,
+        is_from_me=False,
+    )
+
+    digest_window = db.get_digest_activity_window(lookback_hours=24, my_user_number="919876543210")
+    assert digest_window["total_messages"] >= 2, "Digest activity window must collect recent incoming messages and mentions"
+    assert len(digest_window["mentions"]) >= 1, "Mention of user must be collected"
+
+    # Mock gemini for bot client
+    class MockGemini:
+        def generate_morning_digest(self, data):
+            return "🌅 *WAmate Morning Executive Digest*\n• Urgent inquiry from Alice\n• Mention in Investors group"
+
+    bot.gemini = MockGemini()
+    prev_sent = len(mock_neonize.sent_messages)
+    ok, digest_text = bot.generate_and_send_morning_digest(force=True)
+    assert ok is True, f"Digest generation failed: {digest_text}"
+    assert len(mock_neonize.sent_messages) == prev_sent + 1, "Digest message must be sent to self-chat"
+    last_sent = mock_neonize.sent_messages[-1]
+    assert last_sent["to"].Device == 0, "Self-chat digest recipient must have clean Device=0"
+    assert "Morning Executive Digest" in last_sent["message"]
+    print("   [OK] Daily Morning Executive Digest activity window & self-chat dispatch verified.")
+
+    # 9. Test Semantic Concept Search Candidate Retrieval
+    print("\n9. Testing Semantic / Concept Search candidate retrieval and RAG integration...")
+    sem_candidates = db.get_semantic_search_candidates("What did Alice say about the financial report?")
+    assert len(sem_candidates) >= 1, "Semantic candidate retrieval must match relevant context"
+    assert any("financial report" in c["text"].lower() for c in sem_candidates)
+    print("   [OK] Semantic candidates successfully retrieved with conceptual query tokenization.")
 
     # Clean up test database
     if db_path.exists():

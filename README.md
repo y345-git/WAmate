@@ -80,11 +80,12 @@ WAmate: 🛡️ 1. 🗑️ Deleted — Alex (14:22) • Original: "Hold off on s
 
 Launch WAmate (or run standalone via `python3 main.py --web-only`) and visit **`http://127.0.0.1:8765`**:
 
-- **Search & Media Vault** — Tokenized FTS5 + OCR search across messages and phone numbers (`@lid` resolved), date filters (`Today`, `7d`, `30d`), video thumbnails, and PDF/doc previews.
-- **Anti-Delete Vault** — Real-time log of deleted and edited messages (status broadcasts filtered out).
+- **Search & Media Vault + AI Concept Search (RAG)** — Instant FTS5 token search + **✨ AI Concept Search** for natural language queries (e.g. *"What did mom say about the clinic?"* or *"Where did Rahul share the Wi-Fi password?"*) with direct AI synthesis and cited messages, using zero wasted API calls.
+- **Anti-Delete Vault & Real-Time Media Storage** — Incoming media is downloaded to disk instantly with 0 Gemini tokens; preserves revoked and edited messages permanently even after sender taps "Delete for Everyone".
+- **Daily Morning Executive Digest (Sent to Self-Chat)** — Scheduled morning AI briefing (or 1-click Web UI trigger) analyzing the past 24 hours of activity (urgent mentions, unanswered inquiries, group highlights) delivered straight to your WhatsApp "Message Yourself" chat using only 1 Gemini API call per day.
 - **Broadcast & Campaign Manager** — Target audience by scope (*All, Contacts Only, Groups Only*) and custom roles with instant live recipient previews and targeting counter badge. Supports `{name}`, `{first_name}`, and `{phone}` personalization, media attachments, and anti-spam delivery pacing (1.0s – 2.5s randomized jitter).
+- **Scheduled & Recurring Automations** — Schedule campaigns for future timestamps or set recurring cycles (*Daily*, *Weekly*, *Monthly*) with automatic next-run advancement and instant "Send Now" trigger.
 - **Live Delivery Modal & Background Tracking** — Real-time progress bar with per-recipient status feed, floating bottom capsule indicator for dismissible background broadcasts, and page reload resilience.
-- **Scheduled Campaign Dispatcher** — Schedule campaigns with a custom calendar & time picker, quick presets (`+30m`, `+1h`, `+3h`, `Tonight`, `Tomorrow`), live recipient preview list, and manageable queue with instant "Send Now" trigger.
 - **In-Depth Campaign History & Audit** — Comprehensive execution logs showing start and end timestamps, total duration, delivery pacing rate, success rates, full message payload, and searchable per-recipient audit feed.
 - **Excel Backup & Restore** — Export and import your entire address book, groups, and color-coded role tags using formatted `.xlsx` workbooks (Merge or Replace modes).
 - **One-Click Actions** — Click **Ask AI** on any bubble or card to query Gemini, or **Send to WA** to push items straight into your WhatsApp self-chat.
